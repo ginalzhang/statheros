@@ -106,6 +106,18 @@ describe('calibration guide and auto-capture', () => {
     expect(controller.state.active).toBe(false);
     expect(controller.state.guide).toMatchObject({ farEnough: true });
   });
+  it('flags a flipped axis when the hand registers the opposite way (overhead camera facing back)', async () => {
+    const { controller } = setup();
+    await hold(controller, { x: .5, y: .5 }, 1100); await hold(controller, { x: .5, y: .5 }, 2100);
+    await hold(controller, { x: .4, y: .5 }, 1100); await hold(controller, { x: .4, y: .5 }, 2100);
+    await hold(controller, { x: .6, y: .5 }, 1100); await hold(controller, { x: .6, y: .5 }, 2100);
+    expect(controller.state.step).toBe('up');
+    await hold(controller, { x: .5, y: .6 }, 1500); // "forward" shows as down in the image
+    expect(controller.state.active).toBe(false);
+    expect(controller.state.guide).toMatchObject({ step: 'up', farEnough: false, wrongWay: true });
+    await hold(controller, { x: .5, y: .52 }, 300);
+    expect(controller.state.guide?.wrongWay).toBe(false);
+  });
   it('the right step does not fire from the left position (offset sign)', async () => {
     const { controller } = setup();
     await hold(controller, { x: .5, y: .5 }, 1100); await hold(controller, { x: .5, y: .5 }, 2100);
@@ -114,5 +126,6 @@ describe('calibration guide and auto-capture', () => {
     await hold(controller, { x: .4, y: .5 }, 1500);
     expect(controller.state.active).toBe(false);
     expect(controller.state.guide?.offset).toBeLessThan(0);
+    expect(controller.state.guide?.wrongWay).toBe(false); // starting from Left is expected, not a flipped camera
   });
 });

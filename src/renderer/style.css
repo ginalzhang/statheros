@@ -146,3 +146,5 @@ dd { margin: 0; }
 .calibration-guide .meter span { display: block; height: 100%; background: var(--selected); transition: width 120ms linear; }
 .calibration-guide .meter.ok span { background: var(--toggle-on); }
 .orientation .secondary { margin-top: 0; }
+.wrong-way { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: #FFF8EE; border-left: 3px solid #795323; }
+.wrong-way p { margin: 0 0 6px; }

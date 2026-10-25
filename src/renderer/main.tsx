@@ -154,7 +154,7 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
   // Never show a false Active/Connected (handoff §04): status comes from the helper and the live feed.
   const guide = setup?.calibrating && !setup.active ? setup.guide : null;
   const hint = !probe.running ? null : edgeHint(probe.edge ?? null, palm ? 'palm' : 'head') ?? rejectionHint(probe.rejection, palm ? 'palm' : 'head')
-    ?? (guide ? (guide.farEnough ? `${stepLabel(guide.step)}: hold still${guide.auto ? ` · ${Math.min(1, guide.steadyMs / 1000).toFixed(1)} s` : ''}` : guide.step === 'neutral' ? 'Neutral: show your hand' : `${stepLabel(guide.step)}: keep going a little`) : null);
+    ?? (guide ? (guide.wrongWay ? `${stepLabel(guide.step)} registers the opposite way — turn on ${flipForStep(guide.step) === 'flipY' ? 'Flip up/down' : 'Flip left/right'} in Settings` : guide.farEnough ? `${stepLabel(guide.step)}: hold still${guide.auto ? ` · ${Math.min(1, guide.steadyMs / 1000).toFixed(1)} s` : ''}` : guide.step === 'neutral' ? 'Neutral: show your hand' : `${stepLabel(guide.step)}: keep going a little`) : null);
   const tracking: [string, string] = !native ? ['Connecting', 'muted'] : native === 'FAULT' ? ['Unavailable', 'bad'] : native === 'PAUSED' ? ['Paused', 'good strong'] : native === 'SETUP' ? ['Setting canvas', 'cyan'] : !probe.running ? ['No camera', 'bad']
     : probe.confirmationRequired ? ['Hand lost', 'bad'] : probe.rejection ? [palm ? 'No hand' : 'No face', 'muted'] : ['Active', 'good'];
   const paused = !native || native === 'PAUSED' || native === 'FAULT';
@@ -255,7 +255,18 @@ function Slider({ label, value, disabled, onCommit }: { label: string; value: nu
 const stepLabel = (step: string): string => step[0]!.toUpperCase() + step.slice(1);
 
 /** Live "far enough" meter + hold countdown + edge warning for the current calibration step. */
-function CalibrationGuideView({ setup, probe, mode }: { setup: SetupSnapshot; probe: ProbeReport; mode: Mode }): React.JSX.Element {
+/** Which camera axis to flip when the hand registers the opposite way on a step. */
+const flipForStep = (step: string): 'flipX' | 'flipY' => step === 'left' || step === 'right' ? 'flipX' : 'flipY';
+function WrongWay({ step, status, run }: { step: string; status: ProbeStatus; run: (work: () => Promise<void>) => void }): React.JSX.Element {
+  const axis = flipForStep(step), cameraId = status.settings?.cameraId ?? '';
+  const current = orientationFor(status.settings, cameraId);
+  const opposite = { left: 'right', right: 'left', up: 'down', down: 'up' }[step] ?? '';
+  return <div className="wrong-way" role="alert">
+    <p>Your hand is moving {opposite} in the camera view. The camera is probably mounted {axis === 'flipY' ? 'facing back toward you' : 'mirrored'}.</p>
+    <button disabled={!cameraId} onClick={() => run(() => window.steady.setCameraOrientation(cameraId, axis === 'flipX' ? !current.flipX : current.flipX, axis === 'flipY' ? !current.flipY : current.flipY))}>Turn on {axis === 'flipY' ? 'Flip up/down' : 'Flip left/right'} (recalibrate after)</button>
+  </div>;
+}
+function CalibrationGuideView({ setup, probe, mode, status, run }: { setup: SetupSnapshot; probe: ProbeReport; mode: Mode; status: ProbeStatus; run: (work: () => Promise<void>) => void }): React.JSX.Element {
   const guide = setup.guide;
   const edge = edgeHint(probe.edge ?? null, mode);
   const fraction = guide?.offset != null && guide.target ? Math.max(0, Math.min(1, guide.offset / guide.target)) : guide?.step === 'neutral' && guide.farEnough ? 1 : 0;
@@ -263,6 +274,7 @@ function CalibrationGuideView({ setup, probe, mode }: { setup: SetupSnapshot; pr
     <div className={`meter${guide?.farEnough ? ' ok' : ''}`} aria-label="Distance from neutral"><span style={{ width: `${fraction * 100}%` }} /></div>
     <p>{setup.active ? 'Capturing — keep holding…' : !guide ? 'Show your hand to the camera.' : guide.farEnough ? `Far enough — hold still${guide.auto ? ` (${Math.min(1, guide.steadyMs / 1000).toFixed(1)} / 1.0 s)` : ', then press Capture'}` : guide.step === 'neutral' ? 'Show your hand and rest it in a comfortable middle position.' : `${stepLabel(guide.step)}: keep going a little — a short move is enough`}</p>
     {edge && <p className="error">{edge}</p>}
+    {guide?.wrongWay && <WrongWay step={guide.step} status={status} run={run} />}
   </div>;
 }
 
@@ -333,7 +345,7 @@ function Settings({ status, probe, setup, feedback, run, channel, voice }: { sta
       <p>Neutral → comfortable left → right → up → down. Each direction needs only a short move from neutral; never reach for the frame edge. Hold still for a second and it captures automatically (or press Capture), then keep holding for the two-second window. Each capture needs at least 40 valid frames and 80% validity. Small movement bounds require a retry.</p>
       <p role="status" data-testid="setup-message">{setup?.message ?? 'Start the camera to begin.'}</p>
       <p>Current step: {setup?.step ?? 'none'}{setup?.active ? ' · sampling' : ''}</p>
-      {setup?.calibrating && <CalibrationGuideView setup={setup} probe={probe} mode={mode} />}
+      {setup?.calibrating && <CalibrationGuideView setup={setup} probe={probe} mode={mode} status={status} run={run} />}
       <label className="confirmation"><input type="checkbox" checked={setup?.guide?.auto ?? true} onChange={event => send('auto-capture', { enabled: event.target.checked })} />Auto-capture when I hold still for 1 second (Capture still works manually)</label>
       <div className="settings-actions"><button disabled={!probe.running || setup?.active} onClick={() => send('calibrate')}>Begin five-position calibration</button><button disabled={!setup?.calibrating || setup.active} onClick={() => send('capture')}>Capture / Retry</button><button onClick={() => send('cancel')}>Cancel calibration</button><button disabled={!setup?.calibration || setup.active || !probe.running} onClick={() => send('recenter')}>Recenter neutral</button></div>
       {setup?.calibration && <>

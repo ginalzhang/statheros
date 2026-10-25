@@ -6,7 +6,11 @@ import { CalibrationCapture, CalibrationSession, TrackingEngine, recenterCalibra
  * Live calibration guide. `offset` is the signed distance from the neutral capture in the step's
  * direction; `target` is a comfortable margin over the hard rule (> 0.01 and > 3 × neutral jitter).
  */
-export interface CalibrationGuide { step: CaptureStep; offset: number | null; target: number | null; farEnough: boolean; steadyMs: number; auto: boolean }
+export interface CalibrationGuide {
+  step: CaptureStep; offset: number | null; target: number | null; farEnough: boolean; steadyMs: number; auto: boolean;
+  /** The hand moved at least `target` the opposite way: the camera axis is likely flipped for this mount. */
+  wrongWay: boolean;
+}
 /** Auto-capture: hold still this long (all frames valid, spread ≤ HOLD_SPREAD) once far enough. */
 export const HOLD_MS = 1000;
 export const HOLD_SPREAD = 0.015;
@@ -39,6 +43,9 @@ export class SetupController {
   state: SetupSnapshot = { step: null, active: false, calibrating: false, recentering: false, message: 'Select a camera and start tracking, then calibrate.', calibration: null, position: null, guide: null, metrics: emptyMetrics(), baseline: 'idle' };
   autoCapture = true;
   private hold: { anchor: Point; at: number }[] = [];
+  /** Wrong-way detection starts only after the hand passes near neutral during the current step
+   *  (Right starts from the Left position and Down from Up, which are legitimately "opposite"). */
+  private nearNeutral: { step: CaptureStep | null; seen: boolean } = { step: null, seen: false };
   constructor(private changed: (snapshot: SetupSnapshot) => void, private save: (calibration: CalibrationV1) => Promise<void>, private mapped: (sample: TrackingSample, position: Point | null) => void, private recorded: (metrics: TrackingProbeMetrics) => void = () => {}) {}
   update(settings: SettingsV1 | undefined, display: DisplayInfo | undefined, generation: number): void {
     if (!settings) return;
@@ -160,7 +167,10 @@ export class SetupController {
     }
     const farEnough = step === 'neutral' ? Boolean(sample.valid) : offset !== null && target !== null && offset >= target;
     const steadyMs = this.hold.length > 1 ? this.hold.at(-1)!.at - this.hold[0]!.at : 0;
-    this.state.guide = { step, offset, target, farEnough, steadyMs: farEnough ? steadyMs : 0, auto: this.autoCapture };
+    if (this.nearNeutral.step !== step) this.nearNeutral = { step, seen: false };
+    if (offset !== null && target !== null && Math.abs(offset) < target / 2) this.nearNeutral.seen = true;
+    const wrongWay = this.nearNeutral.seen && offset !== null && target !== null && -offset >= target;
+    this.state.guide = { step, offset, target, farEnough, steadyMs: farEnough ? steadyMs : 0, auto: this.autoCapture, wrongWay };
     // Spans of ≥ HOLD_MS minus one frame count as a full second of holding.
     if (this.autoCapture && farEnough && steadyMs >= HOLD_MS - 40) this.capture();
   }
