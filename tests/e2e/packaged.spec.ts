@@ -149,9 +149,11 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
         const frameId = await page.evaluate(async position=>{
           const status=await window.steady.status();
           const root=globalThis as any;root.phase03Frame=Math.max(root.phase03Frame??0,status.native?.latestValidFrame??0)+1;
-          window.steady.submitMappedProbe({generation:status.generation,frameId:root.phase03Frame,captureTimestamp:performance.now(),mode:status.settings!.mode,valid:true,anchor:{x:.5,y:.5},qualityReason:'phase03 synthetic mapped fixture'},position);
+          window.steady.submitMappedProbe({generation:status.generation,frameId:root.phase03Frame,captureTimestamp:performance.now()-10,mode:status.settings!.mode,valid:true,anchor:{x:.5,y:.5},qualityReason:'phase03 synthetic mapped fixture'},position);
           return root.phase03Frame as number;
         },position);
+        // Real captures precede receipt. Keep the fixture outside clock-estimate uncertainty,
+        // then wait for consumption rather than assuming a fixed IPC delivery delay.
         await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).native?.latestValidFrame)).toBe(frameId);
         await page.waitForTimeout(35);
       }
