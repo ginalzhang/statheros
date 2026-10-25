@@ -1,2 +1,0 @@
-HARDWARE_READY: new Phase02 app, fake normal input, microphone off; operator may start Head camera.
-HARDWARE_ERROR: TypeError: Cannot read properties of undefined (reading '_object')

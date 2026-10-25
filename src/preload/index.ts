@@ -1,14 +1,16 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { estimateClock, type ClockRoundTrip } from './clock';
 import type { VoiceCaptureCommand, VoiceCaptureReport, VoiceSnapshot } from '../shared/voice';
-import type { ActionID, LocalActionID, GlobalBindings, ShortcutProfile, CalibrationV1, Point, TrackingProbeMetrics, Mode, ProbeStatus, Rect, SteadyAPI, TrackingSample } from '../shared/contracts';
+import type { ActionID, LocalActionID, GlobalBindings, ShortcutProfile, CalibrationV1, CanvasSelection, CanvasSurfaceSession, Point, TrackingProbeMetrics, Mode, ProbeStatus, Rect, SteadyAPI, TrackingSample } from '../shared/contracts';
+
+const auxiliaryCanvasView = ['canvas-overlay', 'canvas-outline'].includes(new URLSearchParams(location.search).get('view') ?? '');
 
 let clockOffset = 0;
 let clockReady = false;
 let synchronizing = false;
 let clockFault: string | null = 'Synchronizing capture clock';
 const clockListeners = new Set<(status: ProbeStatus) => void>();
-const statusWithClock = (status: ProbeStatus): ProbeStatus => ({ ...status, fault: status.fault ?? clockFault });
+const statusWithClock = (status: ProbeStatus): ProbeStatus => auxiliaryCanvasView ? status : ({ ...status, fault: status.fault ?? clockFault });
 async function synchronizeClock(): Promise<void> {
   if (synchronizing) return;
   synchronizing = true;
@@ -40,9 +42,11 @@ async function synchronizeClock(): Promise<void> {
     void ipcRenderer.invoke('steady:status').then((status: ProbeStatus) => { for (const callback of clockListeners) callback(statusWithClock(status)); }).catch(() => undefined);
   }
 }
-void synchronizeClock();
-setInterval(() => { void synchronizeClock(); }, 30_000);
-ipcRenderer.on('steady:resync-clocks', () => { void synchronizeClock(); });
+if (!auxiliaryCanvasView) {
+  void synchronizeClock();
+  setInterval(() => { void synchronizeClock(); }, 30_000);
+  ipcRenderer.on('steady:resync-clocks', () => { void synchronizeClock(); });
+}
 
 const api: SteadyAPI = Object.freeze({
   status: (): Promise<ProbeStatus> => ipcRenderer.invoke('steady:status').then(statusWithClock),
@@ -55,7 +59,13 @@ const api: SteadyAPI = Object.freeze({
   action: (actionId: ActionID): Promise<void> => ipcRenderer.invoke('steady:action', actionId),
   localAction: (actionId: LocalActionID): Promise<void> => ipcRenderer.invoke('steady:local-action', actionId),
   beginCanvas: (): Promise<void> => ipcRenderer.invoke('steady:begin-canvas'),
-  cancelCanvas: (): Promise<void> => ipcRenderer.invoke('steady:cancel-canvas'),
+  copyCanvasDiagnostics: (): Promise<void> => ipcRenderer.invoke('steady:copy-canvas-diagnostics'),
+  selectCanvas: (): Promise<void> => ipcRenderer.invoke('steady:select-canvas'),
+  reviewWorkspace: (): Promise<void> => ipcRenderer.invoke('steady:review-workspace'),
+  beginLegacyCanvas: (): Promise<void> => ipcRenderer.invoke('steady:begin-legacy-canvas'),
+  previewCanvas: (selection: CanvasSelection): Promise<void> => ipcRenderer.invoke('steady:preview-canvas', selection),
+  confirmCanvas: (selection: CanvasSurfaceSession): Promise<void> => ipcRenderer.invoke('steady:confirm-canvas', selection),
+  cancelCanvas: (sessionId?: string): Promise<void> => ipcRenderer.invoke('steady:cancel-canvas', sessionId),
   setRealInput: (enabled: boolean): Promise<void> => ipcRenderer.invoke('steady:real-input', enabled),
   recover: (): Promise<void> => ipcRenderer.invoke('steady:recover'),
   saveBindings: (bindings: GlobalBindings): Promise<void> => ipcRenderer.invoke('steady:save-bindings', bindings),

@@ -100,8 +100,10 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     }
     await expect.poll(frameCount,{timeout:10000}).toBeGreaterThan(2);
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).settings?.cameraId),{timeout:5000}).not.toBe('');
+    const autoCapture = settings.getByRole('checkbox',{name:'Auto-capture when I hold still for 1 second (Capture still works manually)',exact:true});
+    await autoCapture.click(); await expect(autoCapture).not.toBeChecked();
     await settings.getByRole('button',{name:'Begin five-position calibration',exact:true}).click();
-    await expect(settings.getByTestId('setup-message')).toContainText('Hold a neutral position',{timeout:5000});
+    await expect(settings.getByTestId('setup-message')).toContainText('Rest your hand',{timeout:5000});
     const positions = [{x:.5,y:.5},{x:.3,y:.5},{x:.8,y:.5},{x:.5,y:.3},{x:.5,y:.8}];
     const steps = ['left','right','up','down'];
     for (let index=0;index<positions.length;index++) {
@@ -119,14 +121,15 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
       if(index<4) await expect(settings.getByText(`Current step: ${steps[index]}`,{exact:true})).toBeVisible({timeout:5000});
       else await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).settings?.calibrations.length),{timeout:5000}).toBe(1);
     }
-    await expect(settings.getByTestId('setup-message')).toContainText('Five-position calibration saved',{timeout:5000});
+    // Saving publishes a new configuration; the live controller may already
+    // display its loaded-calibration message. Assert the durable result below.
     const calibrated = await page.evaluate(()=>window.steady.status());
     expect(calibrated.settings?.calibrations[0]).toMatchObject({gain:1,smoothing:50,neutral:{x:.5,y:.5}});
     expect(calibrated.canvasConfirmed).toBe(false); expect(calibrated.native?.buttonDown).toBe(false); expect(calibrated.native?.state).toBe('PAUSED'); expect(calibrated.nativeClockReady).toBe(true);
     await expect(page.evaluate(()=>window.steady.action('resume'))).rejects.toThrow('Close Settings');
     await settings.getByRole('button',{name:'Recenter neutral',exact:true}).click();
     await expect(settings.getByTestId('setup-message')).toContainText('Capturing a new neutral',{timeout:2000});
-    await expect(settings.getByTestId('setup-message')).toContainText('Recenter saved',{timeout:5000});
+    await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).settings?.calibrations[0]?.neutral),{timeout:5000}).toEqual(positions[4]);
     expect((await page.evaluate(()=>window.steady.status())).native?.buttonDown).toBe(false);
     const closed = settings.waitForEvent('close');
     await page.evaluate(()=>window.steady.closeSettings()); await closed;
@@ -138,7 +141,7 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     // with fake input, then semantic panel routing with no native click-through.
     await reopened.getByRole('button',{name:'Stop camera probe',exact:true}).click();
     const closedAgain=reopened.waitForEvent('close');await page.evaluate(()=>window.steady.closeSettings());await closedAgain;
-    await page.evaluate(()=>window.steady.beginCanvas());
+    await page.evaluate(()=>window.steady.beginLegacyCanvas());
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).native?.state)).toBe('SETUP');
     const sample = async (position:{x:number;y:number}, count=1):Promise<void> => {
       for(let index=0;index<count;index++) {
@@ -164,11 +167,11 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     await page.evaluate(()=>window.steady.action('click'));
     for(const action of ['undo','redo','brush','toggleErase','bigger','smaller'] as const)await page.evaluate(action=>window.steady.action(action),action);
     await page.evaluate(()=>window.steady.action('penDown'));
-    const panelPoint=await app.evaluate(({BrowserWindow})=>{const bounds=BrowserWindow.getAllWindows()[0]!.getBounds();return {x:bounds.x+10,y:bounds.y+10};});
+    const panelPoint=await app.evaluate(({BrowserWindow})=>{const bounds=BrowserWindow.getAllWindows().find(win=>new URL(win.webContents.getURL()).searchParams.get('view')==='panel')!.getBounds();return {x:bounds.x+10,y:bounds.y+10};});
     await sample(panelPoint);current=await page.evaluate(()=>window.steady.status());expect(current.native?.state).toBe('HOVER');expect(current.native?.buttonDown).toBe(false);
     // Background consumes Click. A registered Pause invokes its local dispatcher.
     await page.evaluate(()=>window.steady.action('click'));
-    const pauseRect=await page.getByRole('button',{name:'Pause input',exact:true}).boundingBox();expect(pauseRect).not.toBeNull();
+    const pauseRect=await page.getByRole('button',{name:'Pause tracking',exact:true}).first().boundingBox();expect(pauseRect).not.toBeNull();
     await sample({x:panelPoint.x-10+pauseRect!.x+pauseRect!.width/2,y:panelPoint.y-10+pauseRect!.y+pauseRect!.height/2});
     await page.evaluate(()=>window.steady.action('click'));expect((await page.evaluate(()=>window.steady.status())).native?.state).toBe('PAUSED');
     await sample(inside,18);await page.evaluate(()=>window.steady.action('resume'));await page.evaluate(()=>window.steady.action('penDown'));

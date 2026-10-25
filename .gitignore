@@ -12,3 +12,4 @@ resources/bin/
 resources/voice/models/
 resources/voice/addon/
 .gstack/
+.archive/

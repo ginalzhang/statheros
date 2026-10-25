@@ -1,9 +1,0 @@
-
- RUN  v5.0.1 /Users/issacwoo/Documents/calhacks-26
-
-
- Test Files  1 passed (1)
-      Tests  1 passed | 13 skipped (14)
-   Start at  19:55:52
-   Duration  103ms (transform 68%, import 22%, tests 7%, worker 4%)
-

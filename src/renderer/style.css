@@ -148,3 +148,22 @@ dd { margin: 0; }
 .orientation .secondary { margin-top: 0; }
 .wrong-way { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: #FFF8EE; border-left: 3px solid #795323; }
 .wrong-way p { margin: 0 0 6px; }
+.advanced-canvas { margin: 10px 0; }
+.advanced-canvas summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+.advanced-canvas summary:focus-visible { outline: 3px solid #9fe7ff; outline-offset: 2px; }
+.canvas-detection-status { font-size: 12px; color: var(--muted); }
+.canvas-diagnostics { margin: 10px 0; }
+.canvas-diagnostics summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+.canvas-diagnostics summary:focus-visible { outline: 3px solid #9fe7ff; outline-offset: 2px; }
+html.canvas-window, .canvas-window body, .canvas-window #root { width: 100%; height: 100%; background: transparent; overflow: hidden; }
+.canvas-selector { position: fixed; inset: 0; background: rgb(8 17 23 / 18%); cursor: crosshair; user-select: none; touch-action: none; }
+.canvas-selection-border { position: absolute; border: 3px solid #9fe7ff; background: rgb(159 231 255 / 8%); box-shadow: 0 0 0 9999px rgb(8 17 23 / 22%); pointer-events: none; }
+.canvas-selection-border.invalid { border-color: #ffb5a9; }
+.canvas-selector-controls { position: absolute; z-index: 1; display: flex; flex-direction: column; padding: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--text); overflow: hidden; cursor: default; }
+.canvas-selector-controls h1 { flex-shrink: 0; margin: 0 0 8px; font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.canvas-selector-instructions { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.canvas-selector-controls .settings-actions { flex-shrink: 0; display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 6px; margin: 8px 0 0; }
+.canvas-outline { position: absolute; border: 3px solid #9fe7ff; pointer-events: none; box-shadow: inset 0 0 0 1px #152631; }
+.canvas-outline span { position: absolute; left: 0; top: 0; padding: 7px 10px; background: #182126; color: #eff8fb; border-radius: 0 0 6px 0; white-space: nowrap; }
+
+.panel-section .settings-actions button, .advanced-canvas button, .canvas-diagnostics button, .canvas-selector-controls button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }

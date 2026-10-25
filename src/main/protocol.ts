@@ -11,7 +11,7 @@ export function envelope(x: unknown): x is Envelope {
 export function validRequest(x: unknown): x is Request {
   if (!envelope(x)) return false;
   const p = x.payload;
-  const fields: Record<string,string[]> = {hello:['bundleId'],configure:['generation','targetBundleId','targetPid','displayId','canvas','excludedRects'],sample:['generation','frameId','captureTimestamp','valid','position'],action:['generation','eventId','actionId'],ping:['senderTimestamp'],microphone:['enabled','speechSession'],installSpeechAssets:['locale'],shutdown:[]};
+  const fields: Record<string,string[]> = {hello:['bundleId'],configure:['generation','targetBundleId','targetPid','displayId','canvas','excludedRects'],sample:['generation','frameId','captureTimestamp','valid','position'],action:['generation','eventId','actionId'],ping:['senderTimestamp'],restoreTarget:['targetPid'],microphone:['enabled','speechSession'],installSpeechAssets:['locale'],shutdown:[]};
   const expected=fields[x.type];if(!expected||Object.keys(p).length!==expected.length||expected.some(k=>!(k in p)))return false;
   switch (x.type) {
     case 'hello': return p.bundleId === 'org.steady.local';
@@ -19,6 +19,7 @@ export function validRequest(x: unknown): x is Request {
     case 'sample': return uint(p.generation) && uint(p.frameId) && finite(p.captureTimestamp) && p.captureTimestamp >= 0 && typeof p.valid === 'boolean' && (p.valid ? point(p.position) : p.position === null);
     case 'action': return uint(p.generation) && typeof p.eventId === 'string' && p.eventId.length > 0 && Buffer.byteLength(p.eventId)<=128 && ACTIONS.includes(p.actionId as never);
     case 'ping': return finite(p.senderTimestamp) && p.senderTimestamp >= 0;
+    case 'restoreTarget': return uint(p.targetPid) && p.targetPid > 0 && p.targetPid <= 2147483647;
     case 'microphone': return typeof p.enabled === 'boolean' && uuid(p.speechSession);
     case 'installSpeechAssets': return p.locale === 'en-US';
     case 'shutdown': return Object.keys(p).length === 0;
@@ -28,12 +29,37 @@ export function validRequest(x: unknown): x is Request {
 function nativeState(x: unknown): x is NativeState {
   return isObject(x) && ['lastReleaseTimestamp','lastValidCaptureTimestamp'].every(k=>x[k]===undefined||x[k]===null||(finite(x[k])&&x[k]>=0)) && ['SETUP','PAUSED','HOVER','DRAWING','FAULT'].includes(x.state as string) && typeof x.reason === 'string' && typeof x.buttonDown === 'boolean' && (x.foregroundTarget === null || typeof x.foregroundTarget === 'string') && uint(x.generation) && (x.latestValidFrame === null || uint(x.latestValidFrame)) && isObject(x.permissions) && typeof x.permissions.accessibility === 'boolean' && ['camera','microphone','speech'].every(k => typeof (x.permissions as Record<string, unknown>)[k] === 'string');
 }
+function canvasRect(value: unknown): value is Rect {
+  return rect(value) && Object.keys(value).length === 4 && Object.keys(value).every(key => ['x','y','width','height'].includes(key));
+}
+function canvasDiagnostics(value: unknown): boolean {
+  if (value === null) return true;
+  if (!isObject(value) || Object.keys(value).some(key => !['inspected','complete','truncated','nodes','windowSource'].includes(key)) ||
+    !uint(value.inspected) || value.inspected > 4096 || typeof value.complete !== 'boolean' || typeof value.truncated !== 'boolean' ||
+    !['ax','window-server','none'].includes(value.windowSource as string) || !Array.isArray(value.nodes) || value.nodes.length > 32) return false;
+  return value.nodes.every(node => isObject(node) && Object.keys(node).length === 6 && Object.keys(node).every(key => ['path','role','subrole','identifier','bounds','childCount'].includes(key)) &&
+    typeof node.path === 'string' && node.path.length <= 80 && /^[0-9]+(?:\/[0-9]+)*$/.test(node.path) &&
+    typeof node.role === 'string' && /^AX[A-Za-z0-9]{0,62}$/.test(node.role) &&
+    typeof node.subrole === 'string' && (node.subrole === '' || /^AX[A-Za-z0-9]{0,62}$/.test(node.subrole)) &&
+    (node.identifier === null || (typeof node.identifier === 'string' && /^(?:qt_[A-Za-z0-9_]{1,60}|kis[A-Za-z0-9_]{1,60}|view_[0-9]{1,12}|canvas(?:Widget|Frame|Controller|View)?|centralWidget|scrollArea|viewport)$/i.test(node.identifier))) &&
+    (node.bounds === null || canvasRect(node.bounds)) && uint(node.childCount) && node.childCount <= 4096);
+}
 export function validReply(x: unknown): x is Reply {
   if (!envelope(x)) return false;
   const p = x.payload;
   switch (x.type) {
     case 'ack': return uint(p.requestSeq) && typeof p.accepted === 'boolean' && typeof p.code === 'string' && nativeState(p.state) && (p.nativeTimestamp === null || finite(p.nativeTimestamp)) && (p.protocolVersion===undefined||p.protocolVersion===1) && (p.displays===undefined||(Array.isArray(p.displays)&&p.displays.every(display=>isObject(display)&&uint(display.id)&&rect(display.bounds)&&rect(display.workArea)&&typeof display.builtIn==='boolean'&&typeof display.primary==='boolean'&&finite(display.scaleFactor)&&display.scaleFactor>0))) && (p.capabilities===undefined||(Array.isArray(p.capabilities)&&p.capabilities.every(item=>typeof item==='string'))) && (p.senderTimestamp===undefined||finite(p.senderTimestamp)) && (p.targetPid===undefined||p.targetPid===null||(uint(p.targetPid)&&p.targetPid>0&&p.targetPid<=2147483647));
     case 'state': return nativeState(p);
+    case 'canvasObservation': return Object.keys(p).length === 13 && Object.keys(p).every(key => ['generation','targetPid','windowId','windowBounds','windowToken','layoutToken','diagnostics','workspaceSuggestion','rect','kind','availability','reason','observedAt'].includes(key)) &&
+      uint(p.generation) && (p.targetPid === null || (uint(p.targetPid) && p.targetPid > 0 && p.targetPid <= 2147483647)) &&
+      canvasDiagnostics(p.diagnostics) &&
+      ['windowId', 'windowToken', 'layoutToken'].every(key => p[key] === null || (typeof p[key] === 'string' && (p[key] as string).length > 0 && (p[key] as string).length <= 256)) && (p.windowBounds === null || canvasRect(p.windowBounds)) &&
+      (p.workspaceSuggestion === null || (canvasRect(p.workspaceSuggestion) && canvasRect(p.windowBounds) && p.workspaceSuggestion.width >= 100 && p.workspaceSuggestion.height >= 100 &&
+        p.workspaceSuggestion.x >= p.windowBounds.x && p.workspaceSuggestion.y >= p.windowBounds.y &&
+        p.workspaceSuggestion.x + p.workspaceSuggestion.width <= p.windowBounds.x + p.windowBounds.width && p.workspaceSuggestion.y + p.workspaceSuggestion.height <= p.windowBounds.y + p.windowBounds.height)) &&
+      typeof p.reason === 'string' && p.reason.length <= 2048 && finite(p.observedAt) && p.observedAt >= 0 &&
+      (p.availability === 'available' ? canvasRect(p.rect) && ['document', 'viewport'].includes(p.kind as string) && p.targetPid !== null && p.windowId !== null && p.layoutToken !== null :
+        p.availability === 'unavailable' && p.rect === null && p.kind === null);
     case 'fault': return typeof p.code === 'string' && typeof p.message === 'string';
     case 'speech': return uuid(p.speechSession) && uint(p.utterance) && (p.actionId === null || ACTIONS.includes(p.actionId as never)) && finite(p.speechEndTimestamp) && p.speechEndTimestamp>=0 && finite(p.acceptedTimestamp) && p.acceptedTimestamp>=p.speechEndTimestamp && p.final === true && typeof p.reason === 'string';
     default: return false;

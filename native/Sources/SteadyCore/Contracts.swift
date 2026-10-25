@@ -56,7 +56,7 @@ public struct Envelope: Codable, Sendable { public var v: Int; public var sessio
 public struct WireError: Error, CustomStringConvertible { public let description:String; public init(_ s:String){description=s} }
 public enum Wire {
  public static let maximumBytes = 16*1024
- public static let requestTypes: Set<String> = ["hello","configure","sample","action","ping","microphone","installSpeechAssets","shutdown"]
+ public static let requestTypes: Set<String> = ["hello","configure","sample","action","ping","microphone","installSpeechAssets","restoreTarget","shutdown"]
  public static func parse(_ data:Data) throws -> Envelope {
   guard data.count <= maximumBytes, String(data:data,encoding:.utf8) != nil else {throw WireError("invalid-framing")}
   let e=try JSONDecoder().decode(Envelope.self,from:data)
@@ -78,6 +78,7 @@ public enum Wire {
   case "ping":try exact(["senderTimestamp"]);guard let t=p["senderTimestamp"]?.number,t.isFinite,t>=0 else {throw WireError("timestamp")}
   case "microphone":try exact(["enabled","speechSession"]);guard p["enabled"]?.bool != nil, let s=p["speechSession"]?.string,UUID(uuidString:s) != nil else {throw WireError("microphone")}
   case "installSpeechAssets":try exact(["locale"]);guard p["locale"]?.string=="en-US" else {throw WireError("locale")}
+  case "restoreTarget":try exact(["targetPid"]);guard let pid=p["targetPid"]?.uint,pid>0,pid<=UInt64(Int32.max) else{throw WireError("target-pid")}
   case "shutdown":try exact([])
   default:throw WireError("type")
   }

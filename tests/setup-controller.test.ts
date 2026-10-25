@@ -129,3 +129,15 @@ describe('calibration guide and auto-capture', () => {
     expect(controller.state.guide?.wrongWay).toBe(false); // starting from Left is expected, not a flipped camera
   });
 });
+
+it('publishes auto-capture preference before calibration and keeps it through capture and cancellation', () => {
+  const changed = vi.fn();
+  const controller = new SetupController(changed, async () => {}, () => {});
+  controller.update({ ...defaultSettings(), cameraId: calibration.cameraId }, display, 1);
+  controller.setAutoCapture(false);
+  expect(changed.mock.lastCall?.[0]).toMatchObject({ autoCapture: false, guide: null });
+  controller.begin(); controller.capture();
+  expect(controller.snapshot().autoCapture).toBe(false);
+  controller.cancel();
+  expect(controller.snapshot()).toMatchObject({ autoCapture: false, guide: null });
+});

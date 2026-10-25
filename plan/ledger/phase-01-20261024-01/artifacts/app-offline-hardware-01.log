@@ -1,2 +1,0 @@
-Closed current Steady only; launching the same signed app in app-scoped offline test mode.
-OFFLINE_READY: Steady browser context offline; host networking unchanged. Operator may open Settings and Start camera manually.

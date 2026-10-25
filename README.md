@@ -1,15 +1,28 @@
 # Steady (Statheros)
 
-**Voice commands:** say “hey cartesia, pen down” or use ⌘⇧Space push-to-talk. The wake word runs locally (sherpa-onnx); speech-to-text is Cartesia Ink and is only streamed while the red dot shows. See [docs/voice/README.md](docs/voice/README.md). **UI:** the companion panel follows the Statheros Figma design ([docs/design](docs/design/IMPLEMENTATION.md)).
+**Voice commands:** explicitly enable Voice Commands to use local drawing keywords without a wake word, say “hey cartesia, pen down”, or use ⌘⇧Space push-to-talk. Local keywords and wake detection run on-device (sherpa-onnx); wake/push-to-talk audio streams to Cartesia Ink while the red cloud dot shows. Cloud transcripts without a recognized command can be sent to Claude for interpretation when an Anthropic key is configured. See [docs/voice/README.md](docs/voice/README.md). **UI:** the companion panel follows the Statheros Figma design ([docs/design](docs/design/IMPLEMENTATION.md)).
 
-Phase 03 Krita integration implementation for Apple Silicon/macOS 26+. Phase completion is governed by [the plan](plan/PLAN.md) and [execution ledger](plan/LEDGER.md). Five-position calibration and visual/fake-input mapping are available. Canvas marking, explicit drawing, safe recovery, semantic panel actions and configurable global keys are implemented. Physical Phase 03 acceptance is pending operator verification.
+Steady is a working prototype of a local macOS drawing companion for Krita on Apple Silicon/macOS 26+. It maps camera-based head or palm tracking across the selected display and limits drawing to a configured canvas rectangle. It provides drawing controls through a floating panel and configurable global keys, with five-position calibration, Accessibility-based canvas detection, mouse selection, explicit real-input opt-in, and pause/recovery controls.
 
-Use Node 26.12.1, npm 11.20.0, Swift 6.4 and macOS SDK 27.0. All direct npm dependencies are pinned in `package.json`; use the committed/resolved `package-lock.json` without updating versions.
+Physical-camera, live voice, and Krita acceptance remain partially unverified. Voice starts with the microphone off; Apple speech-asset installation is unused. Generic shortcut profiles are configuration previews; native execution supports the fixed Krita profile.
+
+## Development
+
+Use Node 26.12.1, npm 11.20.0, Swift 6.4, and macOS SDK 27.0. Install the pinned dependencies with the committed `package-lock.json`.
 
 ```sh
 npm ci
 npm run setup:electron
+npm run setup:signing
 npm run assets
+npm run dev
+```
+
+Development starts Forge/Vite and the bundled native helper. If the environment sets `ELECTRON_RUN_AS_NODE=1`, unset it before launching Electron; Playwright does this explicitly. Packaged resources load locally from files and `steady-resource:`. Model/runtime URLs and hashes are recorded in [the asset manifest](resources/asset-manifest.json). Restore assets with `npm run assets`; runtime downloads and CDN fallback are blocked.
+
+## Checks and packaging
+
+```sh
 npm run typecheck
 npm test
 npm run test:native
@@ -18,16 +31,42 @@ npm run test:e2e
 npm run make
 ```
 
-`npm run dev` starts Forge/Vite and the bundled native helper. Development uses only the local Vite origin; packaged resources load from local files and `steady-resource:`. In environments setting `ELECTRON_RUN_AS_NODE=1`, unset it before launching Electron. Playwright does this explicitly.
+Package before running the packaged-app end-to-end tests. Automated tests use fake input; they do not establish physical-camera, real desktop input, fullscreen, permissions, external-display, or offline inference acceptance.
 
-The app is `out/Steady-darwin-arm64/Steady.app`; ZIP output is `out/make/zip/darwin/arm64/Steady-darwin-arm64-0.1.0.zip`. The Swift executable and verified model/runtime files are outside ASAR under `Contents/Resources/`. All asset URLs/hashes are in [the manifest](resources/asset-manifest.json). Restore assets using `npm run assets`; runtime downloads and CDN fallback are blocked.
+Run `npm run setup:signing` once per Mac before packaging. Ad-hoc builds change identity on every rebuild, so macOS silently drops the Accessibility (and Camera/Microphone) grants even though System Settings still shows Steady enabled; builds signed with the local "Steady Local Signing" certificate keep them. Without the certificate, packaging falls back to ad-hoc signing.
 
-The panel starts paused with microphone off, camera off and fake native input. Open Settings to select a camera/mode, start capture, and complete neutral/left/right/up/down captures. Each Capture samples for two seconds and requires at least40 valid samples and80% validity. The panel shows a mirrored preview. Calibration is saved separately per camera/mode in atomic versioned settings; no active input state is persisted. Recenter captures neutral, preserves extents and leaves input paused. After declared Palm loss, show only the selected model label and explicitly confirm it. Continuity uses a conservative label/proximity heuristic. Voice input (Cartesia + local wake word) starts with the microphone off; turn on Voice Commands in the panel to listen for the wake phrase. The panel owns capture when unfocused/collapsed; settings pause input. No frames, recordings or transcripts are persisted. Phase-01 action timing evidence contains session/utterance IDs and action IDs only.
+The packaged app is `out/Steady-darwin-arm64/Steady.app`. ZIP output is `out/make/zip/darwin/arm64/Steady-darwin-arm64-0.1.0.zip`. The Swift executable and verified model/runtime files are outside ASAR under `Contents/Resources/`. See [the native helper documentation](native/README.md) for protocol and runtime details.
 
-The supervised real-input probe is available only in the packaged app. It requires the disposable-document confirmation checkbox and launches the bundled helper with explicit `--probe --real-input`. Switch to Krita during the five-second countdown, keeping the physical cursor over a disposable canvas with room for a ten-point rightward stroke. The probe is bounded; emergency release is available in Settings. Automated tests use fake input and never invoke this control.
+## Using the prototype
 
-Follow the [Phase 03 operator checklist](plan/ledger/phase-03-20261024-01/artifacts/operator-checklist.md) for manual Krita acceptance. The10s warmup+60s baseline measures renderer mapping rate and receipt-to-map processing time. Camera inference p95 is bitmap-dispatch-to-result receipt; neither number represents native-event or perceived smoothing latency. Full scored native timing belongs Phase05. A successful build or synthetic model test does not establish physical-camera, fullscreen, permissions, external-display or offline inference acceptance.
+The panel starts paused, with camera and microphone off and fake native input enabled.
 
-The [2026-10-24 scope amendment](plan/ledger/phase-02-20261024-01/artifacts/desk-palm-deferral-01.md) permits raised-hand Palm validation in Phase 02. Relaxed desk-facing Palm behavior remains unverified and its mandatory physical validation is deferred to Phase 05. Remaining Phase 02 hardware/review evidence is preserved as unverified; the user accepted Phase 02 as sufficient Phase 03 entry.
+1. Open a disposable Krita 5.3.4 document. Select its display in Settings, close Settings, and bring Krita to the foreground.
+2. Choose **Detect canvas** on the floating panel. Steady uses Accessibility information to look for an unambiguous document or drawing viewport. A detected viewport may include gray workspace around the document. The status explains when detection is unavailable; the window frame is never substituted for a canvas.
+3. If Krita exposes only an unnamed workspace, choose **Review suggested workspace** when offered. The overlay highlights that surrounding document area. Steady excludes the bottom info/status bar when its Accessibility geometry exposes one unambiguous, full-width bar along the window's bottom edge. Missing or ambiguous bar geometry leaves the suggestion unchanged; tabs, rulers, or scrollbars may still be included. When necessary, Steady reduces the suggestion to keep its floating panel outside the rectangle, including in fullscreen. The overlay explains this adjustment. Inspect the outline, drag to replace it with the desired drawing rectangle if necessary, then choose **Use canvas**. The suggestion requires explicit review; it is not automatically accepted as a viewport.
+4. To choose the area yourself, use **Select with mouse**. Canvas setup controls temporarily replace the interface at the floating Steady panel's location, with **Use canvas**, **Retry**, and **Cancel** in that same area. Drag a rectangle in either direction on the temporary overlay, then choose **Use canvas**. **Retry** clears it; **Cancel** or Escape discards the setup and leaves drawing paused. The rectangle must be at least 100 × 100 logical points, stay on the selected display, and exclude the persistent Steady panel. Temporary selection controls do not add another forbidden canvas region. If a rectangle you draw overlaps the persistent panel, redraw it or cancel setup and move the panel. The overlay consumes selection clicks and temporarily suspends tracked pointer movement. Mouse selection and workspace review do not require camera capture or calibration.
+5. Open Settings, select a camera and tracking mode, and start capture. The preview is mirrored. Complete neutral/left/right/up/down calibration. Each capture samples for two seconds and requires at least 40 valid samples and 80% validity. Calibration is saved separately per camera and mode. Recenter preserves extents and leaves input paused. After calibration or a camera/mode change, reconfirm the canvas.
+6. Explicitly enable real input in Settings, close Settings, return to Krita, and detect, review, or select the canvas again if needed. Resume explicitly after tracking is valid for 500 ms. F8 toggles the pen; F9 pauses. Additional global keys can be configured in Settings.
 
-For Phase 03, open a disposable Krita document and enable real input explicitly in Settings. Select/calibrate the camera and display, close Settings, keep Krita foreground, then use the nonactivating panel **Set canvas** control. F8 marks top-left then bottom-right during setup and otherwise toggles the pen; F9 pauses. Canvas capture ends paused and Resume requires 500ms of valid tracking. Reconfirm canvas each launch and after geometry/camera/mode changes. Opening Settings, target changes and loss always release input; recovery never resumes automatically. Configure additional global keys in Settings. Generic shortcut profiles are saved previews and remain unverified/unavailable for native execution under the fixed Krita-only protocol. Voice commands use the fixed vocabulary without the “Steady” prefix after the wake phrase; see docs/voice/README.md.
+Automatic detection is monitored while Krita is ready. New detected bounds show a brief outline and always leave input paused; unchanged observations do not interrupt drawing. A manual selection takes precedence until **Detect canvas** is chosen again. Root-window movement, resizing, document identity, and directly observed viewport or suggested workspace bounds invalidate a manual selection, independently of whether the deeper viewport search has completed. These changes require reselection; leaving Krita idle should preserve the confirmation. Changes to an unrelated widget-tree hash do not invalidate it. Manual bounds otherwise stay fixed on screen: reselect after dock changes, zooming, or panning when the viewport or those changes cannot be identified. No canvas rectangle is trusted across launches.
+
+When detection completes without identifying a viewport, open **Canvas diagnostics** on the panel or in Settings and choose **Copy canvas diagnostics**. The report contains bounded Accessibility structure and geometry, technical widget identifiers, hashed window/document identity, and the fields behind the most recent observation-driven invalidation. It also records the last selection-validation rectangles and computed persistent-panel intersection so an unexpected overlap error can be investigated. Temporary selection controls are recorded separately and do not add an exclusion. The report excludes raw window titles, document text, images, and camera data. Reports stay in memory until explicitly copied; no report is uploaded or saved to a file automatically.
+
+Selection previews, mouse coordinates, panel-positioned controls, and confirmation outlines use each overlay's actual content origin in logical points. This accounts for macOS shifting a requested overlay window below its menu area. Preview and confirmation reject an outdated surface frame; no fixed menu-bar or status-bar inset is assumed.
+
+**Advanced canvas setup** retains tracked corner marking: begin **Mark corners with tracking**, position the tracked pointer at the top-left and press F8, then mark the bottom-right with F8. This legacy method requires tracking calibration. F8 only marks corners while advanced tracked setup is active.
+
+Opening Settings, target changes, and tracking loss release input. Recovery never resumes automatically. The panel continues to own capture when unfocused or collapsed. After declared palm loss, show only the selected model label and explicitly confirm the hand; continuity uses a conservative label/proximity heuristic. Canvas setup changes the permitted drawing area; pointer mapping remains display-wide so the floating controls remain reachable.
+
+Settings also offers a bounded real-input probe in the packaged app. Confirm a disposable Krita document, switch to Krita during the five-second countdown, and keep the physical cursor over the canvas with room for a ten-point rightward stroke. Emergency release is available in Settings.
+
+## Known limitations
+
+- Canvas detection uses macOS Accessibility and window metadata only; it does not capture screens, require Screen Recording permission, or install a Krita plugin. Its success depends on the geometry Krita exposes. Missing or ambiguous geometry requires mouse selection. A bounded search can continue across polling intervals rather than restarting the entire tree on each interval. Live viewport detection, window-change invalidation, focus restoration, and physical selection-click isolation require packaged Krita validation; automated tests alone do not establish those behaviors. See the [idle invalidation and diagnostics retest](docs/KRITA_CANVAS_VALIDATION.md#idle-invalidation-and-accessibility-diagnostics).
+- Initial automatic detection targets unrotated documents. Use mouse selection for rotated or ambiguous layouts. A viewport rectangle includes its gray workspace; it does not represent the rotated artwork's exact shape.
+- Relaxed desk-facing palm tracking remains unverified; earlier validation used a raised hand.
+- The 10-second warmup and 60-second baseline measure renderer mapping rate and receipt-to-map processing time. Camera inference p95 measures bitmap dispatch to result receipt. These do not establish native-event or perceived smoothing latency.
+- Local drawing keywords can execute mid-sentence while Voice Commands is enabled. Wake/push-to-talk use Cartesia; optional Claude interpretation uses `ANTHROPIC_API_KEY` or the macOS Keychain. Apple speech assets are unused. Live recognition and speech timing remain unverified. See [voice setup](docs/voice/README.md).
+- No camera frames, recordings, or transcripts are persisted. Retained speech timing diagnostics contain identifiers and counters only.
+
+Historical plans, reviews, operator checklists, and execution evidence are preserved locally in `.archive/plan/`. `.archive/` is ignored by Git and is not included in fresh checkouts. These records describe earlier development milestones; this README describes the current working prototype.

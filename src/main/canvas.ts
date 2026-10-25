@@ -14,6 +14,25 @@ export function validateCanvas(first: Point, second: Point, display: Rect, exclu
   if (excluded.some(rect => intersects(rect, canvas))) throw new Error('Canvas intersects the Steady panel. Move the panel or mark a smaller canvas.');
   return canvas;
 }
+/** Keep a reviewed suggestion useful without weakening the panel exclusion rule.
+ * A single panel divides the suggestion into four possible rectangular strips.
+ * Keep the largest valid strip; if none fits, leave the outline for manual redraw.
+ */
+export function fitWorkspaceSuggestion(suggestion: Rect, display: Rect, panel: Rect | null): Rect {
+  const original = validateCanvas(suggestion, { x: suggestion.x + suggestion.width, y: suggestion.y + suggestion.height }, display, []);
+  if (!panel || !intersects(original, panel)) return original;
+  const right = original.x + original.width, bottom = original.y + original.height;
+  const candidates: Rect[] = [
+    { ...original, width: panel.x - original.x },
+    { ...original, x: panel.x + panel.width, width: right - panel.x - panel.width },
+    { ...original, height: panel.y - original.y },
+    { ...original, y: panel.y + panel.height, height: bottom - panel.y - panel.height },
+  ];
+  const valid = candidates.filter(candidate => candidate.width >= 100 && candidate.height >= 100 &&
+    candidate.x >= original.x && candidate.y >= original.y && candidate.x + candidate.width <= right &&
+    candidate.y + candidate.height <= bottom && !intersects(candidate, panel));
+  return valid.reduce((largest, candidate) => !largest || candidate.width * candidate.height > largest.width * largest.height ? candidate : largest, null as Rect | null) ?? original;
+}
 export class CanvasCapture {
   active = false;
   firstCorner: Point | null = null;
