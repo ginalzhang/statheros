@@ -47,7 +47,7 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     }
     // Settings and panel are separate packaged file:// windows. Verify their
     // control/report transport without opening any camera or microphone.
-    const settingsPromise=app.waitForEvent('window');await page.evaluate(()=>window.steady.openSettings());const settings=await settingsPromise;await settings.waitForLoadState();
+    const settingsPromise=app.waitForEvent('window');await page.evaluate(()=>window.steady.openAdvanced());const settings=await settingsPromise;await settings.waitForLoadState();
     // Voice launches microphone-off (plan §2): wake listening needs an explicit mic-on, so no prompt here.
     await expect(settings.getByRole('heading',{name:'Voice commands',exact:true})).toBeVisible();
     await expect(settings.getByRole('button',{name:'Turn microphone on',exact:true})).toBeVisible();
@@ -133,7 +133,7 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     expect((await page.evaluate(()=>window.steady.status())).native?.buttonDown).toBe(false);
     const closed = settings.waitForEvent('close');
     await page.evaluate(()=>window.steady.closeSettings()); await closed;
-    const reopenedPromise=app.waitForEvent('window');await page.evaluate(()=>window.steady.openSettings());
+    const reopenedPromise=app.waitForEvent('window');await page.evaluate(()=>window.steady.openAdvanced());
     const reopened=await reopenedPromise;await reopened.waitForLoadState();
     await expect(reopened.locator('[aria-labelledby="camera-heading"] [role="status"]')).toContainText('synthetic fixture');
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).nativeClockReady)).toBe(true);
@@ -179,7 +179,7 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).native?.buttonDown),{timeout:1000,intervals:[20]}).toBe(false);
     expect((await page.evaluate(()=>window.steady.status())).native?.state).toBe('PAUSED');
     await page.evaluate(()=>window.steady.recover());current=await page.evaluate(()=>window.steady.status());expect(current.canvasConfirmed).toBe(false);expect(current.nativeFault).toBeNull();expect(current.native?.state).toBe('PAUSED');
-    const finalSettingsPromise=app.waitForEvent('window');await page.evaluate(()=>window.steady.openSettings());const finalSettings=await finalSettingsPromise;await finalSettings.waitForLoadState();
+    const finalSettingsPromise=app.waitForEvent('window');await page.evaluate(()=>window.steady.openAdvanced());const finalSettings=await finalSettingsPromise;await finalSettings.waitForLoadState();
     // Deliberately fault only the fake helper with an unordered sample. Camera
     // Stop must still work after the Pause request rejects, including remount.
     await page.evaluate(async()=>{
@@ -191,7 +191,7 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).nativeFault)).toContain('stale-or-unordered');
     await finalSettings.getByRole('button',{name:'Stop camera probe',exact:true}).click();
     await expect(finalSettings.locator('[aria-labelledby="camera-heading"] [role="status"]')).toContainText('Camera off');
-    await page.evaluate(()=>window.steady.openSettings());
+    await page.evaluate(()=>window.steady.openAdvanced());
     expect((await page.evaluate(()=>window.steady.status())).nativeFault).toContain('stale-or-unordered');
   }finally{await app.close();}
 });

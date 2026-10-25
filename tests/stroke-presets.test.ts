@@ -11,5 +11,10 @@ it('recognizes the active stroke mode from smoothing (and gain when the mode set
   expect(activePreset({ ...base, smoothing: 60, gain: 0.8 })?.id).toBe('precision');
   expect(activePreset({ ...base, smoothing: 60, gain: 1 })).toBeNull();
   expect(activePreset(null)).toBeNull();
-  expect(STROKE_PRESETS.every(preset => preset.smoothing >= 0 && preset.smoothing <= 100 && (preset.gain === undefined || (preset.gain >= 0.5 && preset.gain <= 3)))).toBe(true);
+  expect(STROKE_PRESETS.filter(preset => preset.available !== false).every(preset => preset.smoothing >= 0 && preset.smoothing <= 100 && (preset.gain === undefined || (preset.gain >= 0.5 && preset.gain <= 3)))).toBe(true);
+});
+it('lists all six design modes and never reports Adaptive, which has no engine behavior, as active', () => {
+  expect(STROKE_PRESETS.map(preset => preset.label)).toEqual(['Natural', 'Steady', 'Precision', 'Sketch', 'Tremor Filter', 'Adaptive']);
+  expect(STROKE_PRESETS.find(preset => preset.id === 'adaptive')?.available).toBe(false);
+  expect(activePreset({ ...base, smoothing: -1 })).toBeNull();
 });

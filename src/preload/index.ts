@@ -1,9 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { estimateClock, type ClockRoundTrip } from './clock';
 import type { VoiceCaptureCommand, VoiceCaptureReport, VoiceSnapshot } from '../shared/voice';
-import type { ActionID, LocalActionID, GlobalBindings, ShortcutProfile, CalibrationV1, CanvasSelection, CanvasSurfaceSession, Point, TrackingProbeMetrics, Mode, ProbeStatus, Rect, SteadyAPI, TrackingSample } from '../shared/contracts';
+import type { ActionID, LocalActionID, GlobalBindings, ShortcutProfile, CalibrationV1, CanvasSelection, CanvasSurfaceSession, Point, TrackingProbeMetrics, Mode, ProbeStatus, Rect, SteadyAPI, ToastMessage, TrackingSample } from '../shared/contracts';
 
-const auxiliaryCanvasView = ['canvas-overlay', 'canvas-outline'].includes(new URLSearchParams(location.search).get('view') ?? '');
+// Canvas windows and the floating utilities submit no samples, so they skip capture-clock sync.
+const auxiliaryCanvasView = ['canvas-overlay', 'canvas-outline', 'preview', 'toast'].includes(new URLSearchParams(location.search).get('view') ?? '');
 
 let clockOffset = 0;
 let clockReady = false;
@@ -103,5 +104,8 @@ const api: SteadyAPI = Object.freeze({
   setVoiceKey: (key: string | null): Promise<void> => ipcRenderer.invoke('steady:voice-key', key),
   voiceSelfTest: () => ipcRenderer.invoke('steady:voice-selftest'),
   voiceLatency: () => ipcRenderer.invoke('steady:voice-latency'),
+  openAdvanced: (): Promise<void> => ipcRenderer.invoke('steady:open-advanced'),
+  reportTrackingLost: (): Promise<void> => ipcRenderer.invoke('steady:tracking-lost'),
+  onToast: (callback: (toast: ToastMessage) => void): (() => void) => { const handler = (_event: Electron.IpcRendererEvent, toast: ToastMessage): void => callback(toast); ipcRenderer.on('steady:toast', handler); return () => { ipcRenderer.removeListener('steady:toast', handler); }; },
 });
 contextBridge.exposeInMainWorld('steady', api);

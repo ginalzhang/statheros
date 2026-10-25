@@ -126,4 +126,9 @@ export interface SteadyAPI {
   setVoiceKey(key: string | null): Promise<void>;
   voiceSelfTest(): Promise<import('./voice').VoiceSelfTest>;
   voiceLatency(): Promise<import('./voice').VoiceLatencyReport | null>;
+  openAdvanced(): Promise<void>;
+  reportTrackingLost(): Promise<void>;
+  onToast(callback: (toast: ToastMessage) => void): () => void;
 }
+/** Transient notification (Figma "Notification / …"); success kinds follow a confirmed action result. */
+export interface ToastMessage { kind: 'undo' | 'redo' | 'eraser' | 'pencil' | 'paused' | 'resumed' | 'trackingLost' | 'failed'; detail: string | null; id: string }
