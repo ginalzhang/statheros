@@ -350,14 +350,20 @@ function pointerInCanvas(): boolean {
 function penContext() { return { native: supervisor?.state?.state, buttonDown: Boolean(supervisor?.state?.buttonDown), inCanvas: pointerInCanvas() }; }
 // The rest/lift gesture is retired in favor of lifting when still; saved gesture settings are ignored.
 function penGestureEnabled(): boolean { return false; }
-/** Holding still with the pen down lifts it, before Krita's press-and-hold color sampler can fire. */
-const STILL_LIFT_MS = 400, STILL_RADIUS = 4;
-let stillAnchor: { position: Point; since: number } | null = null;
+/**
+ * Holding still with the pen down lifts it (Steady Tracker's pen-up dwell: 1.2 s within 7.5 pt). It only arms once
+ * the pointer has moved 15 pt from where the pen went down, so a fresh "pen down" isn't lifted straight away.
+ */
+const STILL_LIFT_MS = 1200, STILL_RADIUS = 7.5, STILL_ARM_DISTANCE = 15;
+let stillDown: { origin: Point; armed: boolean } | null = null, stillAnchor: { position: Point; since: number } | null = null;
 function liftWhenStill(position: Point, now: number): void {
-  if (!supervisor?.state?.buttonDown) { stillAnchor = null; return; }
-  if (!stillAnchor || Math.hypot(position.x - stillAnchor.position.x, position.y - stillAnchor.position.y) > STILL_RADIUS) { stillAnchor = { position, since: now }; return; }
+  if (!supervisor?.state?.buttonDown) { stillDown = null; stillAnchor = null; return; }
+  const distance = (a: Point, b: Point): number => Math.hypot(a.x - b.x, a.y - b.y);
+  stillDown ??= { origin: position, armed: false };
+  if (!stillDown.armed) { stillDown.armed = distance(position, stillDown.origin) > STILL_ARM_DISTANCE; if (!stillDown.armed) return; }
+  if (!stillAnchor || distance(position, stillAnchor.position) > STILL_RADIUS) { stillAnchor = { position, since: now }; return; }
   if (now - stillAnchor.since < STILL_LIFT_MS) return;
-  stillAnchor = null;
+  stillDown = null; stillAnchor = null;
   void enqueueAction('penUp').then(() => publishPen('Held still: pen up. Say "pen down" to keep drawing.')).catch(error => fault(String(error)));
 }
 function publishPen(message?: string): void { status.penArmed = pen.armed; if (message !== undefined) status.fault = message; publish(); }
