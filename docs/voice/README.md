@@ -15,7 +15,9 @@ export CARTESIA_API_KEY=sk_car_...   # or paste it into Settings › Voice (stor
 npm run dev
 ```
 
-Steady launches **microphone-off**. Click the mic button on the panel (or press ⌘⇧M) to start listening locally for "hey cartesia".
+Steady launches **microphone-off**. Enable Voice Commands or click the mic button on the panel (or press ⌘⇧M) to listen locally for command keywords and "hey cartesia". Local command words can execute mid-sentence; mute when you do not want voice control. Without a Cartesia key, local commands still work but cloud transcription is unavailable.
+
+When a wake/push-to-talk transcript contains no vocabulary command, optional Claude interpretation maps the text to one fixed Steady action. Configure `ANTHROPIC_API_KEY` or Keychain service `org.steady.anthropic`, account `steady`. Only the transcript is sent to Claude; local command words never call it. Without that key, or on interpretation failure, Steady reports that no command was heard.
 
 | Input | Action |
 |---|---|

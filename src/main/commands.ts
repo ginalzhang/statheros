@@ -1,7 +1,7 @@
-import { ACTIONS, type ActionID, type Point, type Rect } from '../shared/contracts';
+import { ACTIONS, LOCAL_ACTIONS as SHARED_LOCAL_ACTIONS, type ActionID, type Point, type Rect } from '../shared/contracts';
 import { containsPoint } from './canvas';
 
-export const LOCAL_ACTIONS = ['openSettings', 'togglePanel', 'quit', 'beginCanvas', 'cancelCanvas', 'recover', 'confirmHand'] as const;
+export const LOCAL_ACTIONS = SHARED_LOCAL_ACTIONS;
 export type LocalActionID = ActionID | typeof LOCAL_ACTIONS[number];
 export const ALL_CONTROLS: readonly LocalActionID[] = [...ACTIONS, ...LOCAL_ACTIONS];
 export type GlobalBindings = Partial<Record<LocalActionID, string>>;

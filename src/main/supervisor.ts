@@ -45,6 +45,7 @@ export class NativeSupervisor extends EventEmitter {
       if (reply.payload.accepted) pending.resolve(reply.payload); else pending.reject(new Error(reply.payload.code));
     } else if (reply.type === 'state') { this.state = reply.payload; this.emit('state', this.state); }
     else if (reply.type === 'fault') {this.emit('native-fault',reply.payload.code);this.fail(reply.payload.message);}
+    else if (reply.type === 'canvasObservation') this.emit('canvas-observation', reply.payload);
     else this.emit('speech', reply.payload);
   }
   request<K extends keyof RequestPayloads>(type: K, payload: RequestPayloads[K]): Promise<Ack> {

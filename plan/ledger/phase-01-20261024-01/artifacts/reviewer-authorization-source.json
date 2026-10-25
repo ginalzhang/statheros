@@ -1,8 +1,0 @@
-{
-  "reviewer": "/root/reviewer",
-  "sameSession": true,
-  "state": "uncommitted",
-  "change": "Explicit Sendable TCC completion, continuation-only capture",
-  "path": "native/Sources/SteadyNative/SpeechProbe.swift",
-  "sha256": "098ef9524c29f4b08f03fac22b26a9c5b2a2bd3bcd6bb07636c81efdb618ace1"
-}

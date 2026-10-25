@@ -1,9 +1,0 @@
-PASS actual process: live pings do not refresh stale capture; release observed within 256.5ms (fake backend, <=300ms)
-PASS actual process: parent stdin EOF releases held fake button and exits
-PASS actual process: emergency entry point attempts fake up; default posts no desktop event
-PASS actual process: oversized incomplete message faults and exits
-PASS actual process: dedicated bounded probe observes EOF and releases held fake button
-PASS actual process: deferred voice rejects microphone enable and asset setup; disable remains allowed
-PASS actual process: bounded idle speech diagnostics emit without opening microphone
-PASS actual process: protocol-version mismatch faults and releases without input
-8 process checks passed; fake backend only; no camera/microphone/native input used

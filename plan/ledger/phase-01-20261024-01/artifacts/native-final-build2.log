@@ -1,7 +1,0 @@
-Another instance of SwiftPM (PID: 13512) is already running using '/Users/issacwoo/Documents/calhacks-26/.cache/swift-release', waiting until that process has finished execution...warning: /Users/issacwoo/Library/org.swift.swiftpm/configuration is not accessible or not writable, disabling user-level cache features.
-warning: /Users/issacwoo/Library/org.swift.swiftpm/security is not accessible or not writable, disabling user-level cache features.
-[0/1] Planning build
-Building for production...
-[0/2] Write swift-version--1AB21518FC5DEDBE.txt
-Build complete! (0.09s)
-warning: '--build-system native' has been deprecated and will be removed in a future release; please report an issue at https://github.com/swiftlang/swift-package-manager/issues if you are unable to adopt the default build system.

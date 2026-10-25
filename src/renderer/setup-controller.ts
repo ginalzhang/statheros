@@ -20,7 +20,7 @@ const STEP_PROMPTS: Record<CaptureStep, string> = {
   left: 'Move a little to your left', right: 'Move a little to your right', up: 'Move a little up', down: 'Move a little down',
 };
 export interface SetupSnapshot {
-  step: CaptureStep | null; active: boolean; calibrating: boolean; recentering: boolean;
+  autoCapture: boolean; step: CaptureStep | null; active: boolean; calibrating: boolean; recentering: boolean;
   message: string; calibration: CalibrationV1 | null; position: Point | null; guide: CalibrationGuide | null;
   metrics: TrackingProbeMetrics; baseline: 'idle' | 'warmup' | 'measuring' | 'complete';
 }
@@ -40,8 +40,8 @@ export class SetupController {
   private baselineStart: number | null = null;
   private latencies: number[] = [];
   private lastEmit = -Infinity;
-  state: SetupSnapshot = { step: null, active: false, calibrating: false, recentering: false, message: 'Select a camera and start tracking, then calibrate.', calibration: null, position: null, guide: null, metrics: emptyMetrics(), baseline: 'idle' };
-  autoCapture = true;
+  state: SetupSnapshot = { autoCapture: true, step: null, active: false, calibrating: false, recentering: false, message: 'Select a camera and start tracking, then calibrate.', calibration: null, position: null, guide: null, metrics: emptyMetrics(), baseline: 'idle' };
+  get autoCapture(): boolean { return this.state.autoCapture; }
   private hold: { anchor: Point; at: number }[] = [];
   /** Wrong-way detection starts only after the hand passes near neutral during the current step
    *  (Right starts from the Left position and Down from Up, which are legitimately "opposite"). */
@@ -142,7 +142,7 @@ export class SetupController {
     this.state.metrics.elapsedMs = 60_000; this.state.metrics.mappingHz = this.state.metrics.mappedFrames / 60;
     this.state.baseline = 'complete'; this.baselineStart = null; this.recorded(structuredClone(this.state.metrics)); this.emit();
   }
-  setAutoCapture(enabled: boolean): void { this.autoCapture = enabled; this.hold = []; if (this.state.guide) this.state.guide = { ...this.state.guide, auto: enabled }; this.emit(); }
+  setAutoCapture(enabled: boolean): void { this.state.autoCapture = enabled; this.hold = []; if (this.state.guide) this.state.guide = { ...this.state.guide, auto: enabled }; this.emit(); }
   private prompt(step: CaptureStep): string {
     const hold = this.autoCapture ? 'Hold still to capture.' : 'Press Capture when ready.';
     return step === 'neutral' ? `${STEP_PROMPTS.neutral} ${hold}` : `${STEP_PROMPTS[step]} — you don't need to reach the edge. ${hold}`;

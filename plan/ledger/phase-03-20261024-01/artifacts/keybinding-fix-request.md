@@ -1,5 +1,0 @@
-# Operator-reported keybinding fix — 2026-10-24 America/Los_Angeles
-
-Exact user report: “I can't type anything into the keybinds”. This continues authorized Phase03 and its same reviewer session. Root owns this narrow renderer/e2e/build repair; no new worker delegation or future phase. Existing operator session/input/configuration remains untouched. Prepare corrected app separately and require user-controlled relaunch only once it is ready.
-
-Observed source cause: CommandSettings effects depend on status.bindings/status.profile object identity. Each live IPC status publication clones these unchanged saved objects, causing the effects to replace unsaved drafts while typing. Fix effect dependencies to saved serialized content; retain explicit Save behavior and all input safeguards. Affected packaged regression types slowly while repeated fake-native acknowledgments publish status; covers binding edits/save/reopen and generic profile name/shortcut drafts. Typecheck, focused packaged check, build/signature/checksum and same-session review required. Prior physical gates remain unverified; voice off; no Phase04.
