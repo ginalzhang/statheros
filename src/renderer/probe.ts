@@ -39,7 +39,7 @@ export class CameraProbe {
   private rejection: string | null = null;
   private edge: Edge | null = null;
   private orientation: Orientation = DEFAULT_ORIENTATION;
-  constructor(private generation: () => number, private report: (value: ProbeReport) => void, private sample: (value: TrackingSample) => void, private fault: () => void) {}
+  constructor(private generation: () => number, private report: (value: ProbeReport) => void, private sample: (value: TrackingSample) => void, private fault: (reason: 'lost' | 'failed') => void) {}
   setSelectedHand(label: HandLabel | null, confirmed = false): void {
     this.configuredHand = label; this.continuity.setSelectedHand(label, confirmed);
   }
@@ -49,6 +49,8 @@ export class CameraProbe {
     return confirmed;
   }
   preview(canvas: HTMLCanvasElement | null): void { this.canvas = canvas; }
+  /** Called after each preview frame is drawn (video plus landmark overlay). */
+  previewDrawn: ((canvas: HTMLCanvasElement) => void) | null = null;
   /** Camera orientation for unusual mounts; applied to anchors, overlay and preview alike. */
   setOrientation(orientation: Orientation): void { this.orientation = { flipX: orientation.flipX, flipY: orientation.flipY }; }
   private emit(message: string, running = true): void {
@@ -75,7 +77,7 @@ export class CameraProbe {
       const receiveFrame: VideoFrameRequestCallback = (now, metadata) => {
         if (run !== this.run) return;
         this.progress.receive(metadata.mediaTime, now, metadata.captureTime);
-        if (this.canvas) { drawMirroredPreview(this.canvas, video, this.orientation); drawLandmarkOverlay(this.canvas, this.overlay, performance.now()); }
+        if (this.canvas) { drawMirroredPreview(this.canvas, video, this.orientation); drawLandmarkOverlay(this.canvas, this.overlay, performance.now()); this.previewDrawn?.(this.canvas); }
         this.frameCallback = video.requestVideoFrameCallback(receiveFrame);
       };
       this.frameCallback = video.requestVideoFrameCallback(receiveFrame);
@@ -88,7 +90,7 @@ export class CameraProbe {
         if (value.type === 'ready') {
           this.delegate = value.delegate; this.schedule(run);
           this.watchdog = setInterval(() => {
-            if (mode === 'palm' && this.continuity.expire(performance.now())) { this.fault(); this.emit('Selected hand lost; confirm selected hand'); }
+            if (mode === 'palm' && this.continuity.expire(performance.now())) { this.fault('lost'); this.emit('Selected hand lost; confirm selected hand'); }
           }, 10);
         } else if (value.type === 'sample') {
           const received = value.sample as TrackingSample;
@@ -105,7 +107,7 @@ export class CameraProbe {
             const wasConfirmationRequired = this.continuity.confirmationRequired;
             const result = this.continuity.observe({ valid: raw.valid, anchor: raw.anchor, reason: raw.qualityReason }, raw.selectedHand ?? null, raw.captureTimestamp, now);
             this.configuredHand = this.continuity.selectedHand;
-            if (!wasConfirmationRequired && this.continuity.confirmationRequired) this.fault();
+            if (!wasConfirmationRequired && this.continuity.confirmationRequired) this.fault('lost');
             // Retain the first selected label across explicit restarts. A new
             // camera/mode selection is the only caller that deliberately clears it.
             this.configuredHand = this.continuity.selectedHand;
@@ -144,7 +146,7 @@ export class CameraProbe {
   }
   private fail(message: string): void {
     const frames = this.frame, delegate = this.delegate;
-    this.stop(); this.fault(); this.report({ mode: this.mode, message, frames, delegate, running: false });
+    this.stop(); this.fault('failed'); this.report({ mode: this.mode, message, frames, delegate, running: false });
   }
   stop(): void {
     this.run++; clearTimeout(this.timer); clearInterval(this.watchdog);

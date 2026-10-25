@@ -10,7 +10,7 @@ test('editable shortcut drafts survive live status updates and bindings persist 
   try{
     const panel=await app.firstWindow();
     await expect.poll(()=>panel.evaluate(async()=>(await window.steady.status()).nativeClockReady)).toBe(true);
-    const nextWindow=app.waitForEvent('window');await panel.evaluate(()=>window.steady.openSettings());const settings=await nextWindow;await settings.waitForLoadState();
+    const nextWindow=app.waitForEvent('window');await panel.evaluate(()=>window.steady.openAdvanced());const settings=await nextWindow;await settings.waitForLoadState();
     const binding=settings.getByRole('textbox',{name:'Binding resume',exact:true});
     // Every action acknowledgment publishes a freshly cloned status, just like
     // ongoing tracking. All commands and release attempts use fake input.
@@ -28,7 +28,7 @@ test('editable shortcut drafts survive live status updates and bindings persist 
     await Promise.all([updates(),shortcut.pressSequentially('Control+Z',{delay:60})]);
     await expect(shortcut).toHaveValue('Control+Z');
     const closed=settings.waitForEvent('close');await panel.evaluate(()=>window.steady.closeSettings());await closed;
-    const reopenedWindow=app.waitForEvent('window');await panel.evaluate(()=>window.steady.openSettings());const reopened=await reopenedWindow;await reopened.waitForLoadState();
+    const reopenedWindow=app.waitForEvent('window');await panel.evaluate(()=>window.steady.openAdvanced());const reopened=await reopenedWindow;await reopened.waitForLoadState();
     await expect(reopened.getByRole('textbox',{name:'Binding resume',exact:true})).toHaveValue('Control+Alt+R');
     expect((await panel.evaluate(()=>window.steady.status())).realInput).toBe(false);
   }finally{await app.close();}

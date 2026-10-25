@@ -4,7 +4,7 @@
  */
 export type IconName =
   | 'penUp' | 'penDown' | 'latch' | 'pauseTracking' | 'recenter' | 'steadiness' | 'micOff' | 'micOn' | 'calibrate'
-  | 'cursor' | 'eraser' | 'undo' | 'redo' | 'brush' | 'bigger' | 'smaller' | 'sparkle' | 'gear' | 'chevronDown' | 'chevronUp' | 'close' | 'corner' | 'resumeTracking';
+  | 'cursor' | 'eraser' | 'undo' | 'redo' | 'brush' | 'bigger' | 'smaller' | 'sparkle' | 'gear' | 'chevronDown' | 'chevronUp' | 'close' | 'corner' | 'resumeTracking' | 'pause' | 'sliders' | 'hand' | 'alert';
 
 const NIB = 'M11.5 4.8 L17.3 10.2 L11.3 16 C9.5 17.7 6.6 17.1 5.8 15 C5.3 13.6 5.7 11.9 6.7 10.5 Z';
 const glyphs: Record<IconName, React.JSX.Element> = {
@@ -31,6 +31,11 @@ const glyphs: Record<IconName, React.JSX.Element> = {
   chevronUp: <path d="M7 14 L12 9 L17 14" />,
   close: <path d="M7 7 L17 17 M17 7 L7 17" />,
   resumeTracking: <path d="M8 5.5 V18.5 L18.5 12 Z" />,
+  // Statheros 2 header: Pause/Play and Tune (sliders) beside collapse and close.
+  pause: <><path d="M9 6 V18" /><path d="M15 6 V18" /></>,
+  sliders: <><path d="M4 7 H14" /><path d="M18 7 H20" /><circle cx="16" cy="7" r="2" /><path d="M4 17 H6" /><path d="M10 17 H20" /><circle cx="8" cy="17" r="2" /></>,
+  hand: <><path d="M8 12.5 V6.5 A1.25 1.25 0 0 1 10.5 6.5 V11 V4.8 A1.25 1.25 0 0 1 13 4.8 V11 V5.8 A1.25 1.25 0 0 1 15.5 5.8 V11.5 V8.3 A1.25 1.25 0 0 1 18 8.3 V13.5 C18 17.4 15.6 20 12.4 20 C10.2 20 8.8 19 7.6 17.3 L5.2 13.8 A1.3 1.3 0 0 1 7.3 12.3 Z" /></>,
+  alert: <><circle cx="12" cy="12" r="8.5" /><path d="M12 7.8 V12.6" /><circle cx="12" cy="16" r="0.9" fill="currentColor" stroke="none" /></>,
   corner: <><path d="M5 10 V5 H10" /><path d="M14 19 H19 V14" /><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" /></>,
 };
 
