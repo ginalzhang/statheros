@@ -85,3 +85,14 @@ it('a follow-up transcript runs only what the on-device keyword did not, and ask
   expect(interpret).toHaveBeenCalledWith('undo, get rid of those lines');
   expect(effects).toEqual(['undo', 'undo', 'undo', 'undo', 'undo']);
 });
+
+it('open mic: Claude reads what was meant, and speech that is not a request stays silent', async () => {
+  const enqueue = vi.fn(async () => undefined);
+  const claude = vi.fn(async (text: string) => text.includes('rub') ? [{ action: 'eraser' as const, times: 1 }] : []);
+  await expect(dispatchVoiceCommand(command('I want to rub that out', 'open'), enqueue, claude)).resolves.toBe('Eraser');
+  expect(enqueue).toHaveBeenCalledWith('eraser');
+  await expect(dispatchVoiceCommand(command("yeah I'll be there in five", 'open'), enqueue, claude)).resolves.toBe('');
+  // Push-to-talk was a deliberate request, so it still says nothing was heard.
+  await expect(dispatchVoiceCommand(command("yeah I'll be there in five", 'ptt'), enqueue, claude)).rejects.toThrow('No command heard');
+  expect(enqueue).toHaveBeenCalledTimes(1);
+});

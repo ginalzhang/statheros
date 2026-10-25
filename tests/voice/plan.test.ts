@@ -15,10 +15,10 @@ describe('local plan parsing', () => {
   });
   it('keeps several commands in order, each with its own count', () => {
     expect(plan('undo twice then switch to the brush')).toEqual([{ action: 'undo', times: 2 }, { action: 'brush', times: 1 }]);
-    expect(plan('erase and make it bigger 3 times')).toEqual([{ action: 'toggleErase', times: 1 }, { action: 'bigger', times: 3 }]);
+    expect(plan('erase and make it bigger 3 times')).toEqual([{ action: 'eraser', times: 1 }, { action: 'bigger', times: 3 }]);
   });
   it('only repeats actions where repeating means something, and caps the count', () => {
-    expect(plan('erase three times')).toEqual([{ action: 'toggleErase', times: 1 }]);
+    expect(plan('erase three times')).toEqual([{ action: 'eraser', times: 1 }]);
     expect(plan('undo 500 times')).toEqual([{ action: 'undo', times: 20 }]);
   });
   it('marks plain phrasings simple and leaves the rest to Claude', () => {
@@ -43,8 +43,8 @@ describe('resolving a plan', () => {
     expect((await resolvePlan("don't undo", claude([]))).steps).toEqual([]);
   });
   it('falls back to the local parse without Claude, except after a negation', async () => {
-    expect((await resolvePlan('okay now erase this part', claude(null))).steps).toEqual([{ action: 'toggleErase', times: 1 }]);
-    expect((await resolvePlan('okay now erase this part', null)).steps).toEqual([{ action: 'toggleErase', times: 1 }]);
+    expect((await resolvePlan('okay now erase this part', claude(null))).steps).toEqual([{ action: 'eraser', times: 1 }]);
+    expect((await resolvePlan('okay now erase this part', null)).steps).toEqual([{ action: 'eraser', times: 1 }]);
     expect((await resolvePlan("don't undo", null)).steps).toEqual([]);
   });
 });

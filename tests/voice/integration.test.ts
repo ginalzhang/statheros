@@ -115,31 +115,12 @@ async function run(name: string, script: Script, tailS = 12, configure?: (config
   return { commands, states, toasts, server: server.log, wakes: runtime.ctx.sessionCounter, binarySendsOutsideStreaming, runtime };
 }
 
-describe.skipIf(!ready)('voice integration (real wake + VAD, fake Cartesia)', () => {
+describe.skipIf(!ready)('voice integration (real keyword spotter + VAD, fake Cartesia)', () => {
   afterEach(() => undefined);
-  it('wake_plus_command_one_breath → one dispatch with the remnant stripped', async () => {
-    const result = await run('wake_plus_command_one_breath.wav', { finalAfterAudioS: 1.6, transcript: 'sia, pen down.' });
-    expect(result.commands.map(command => command.text)).toEqual(['pen down']);
-    expect(result.commands[0]?.source).toBe('wake');
-    expect(result.states).toContain('LISTENING');
-    expect(result.binarySendsOutsideStreaming).toBe(0);
-    expect(result.server.texts.some(text => text.includes('"close"'))).toBe(true);
-  }, 30_000);
-  it('wake_pause_command → stays listening through the pause, then dispatches', async () => {
-    const result = await run('wake_pause_command.wav', { finalAfterAudioS: 3.4, transcript: 'pen down' });
-    expect(result.commands.map(command => command.text)).toEqual(['pen down']);
-    expect(result.binarySendsOutsideStreaming).toBe(0);
-  }, 30_000);
-  it('silence_5s → no wake, zero audio bytes sent', async () => {
-    const result = await run('silence_5s.wav', { finalAfterAudioS: 1, transcript: 'never' }, 1);
-    expect(result.wakes).toBe(0);
+  it('a command word inside a longer utterance runs once, on-device, and keeps the utterance local', async () => {
+    const result = await run('wake_plus_command_one_breath.wav', { finalAfterAudioS: 1.6, transcript: 'hey cartesia, pen down.' });
+    expect(result.commands.map(command => [command.text, command.source])).toEqual([['pen down', 'local']]);
     expect(result.server.audioBytes).toBe(0);
-    expect(result.server.connections).toBe(1); // the startup probe only
-  }, 30_000);
-  it('double_wake_1s_apart → exactly one utterance', async () => {
-    const result = await run('double_wake_1s_apart.wav', { finalAfterAudioS: 99, transcript: '' }, 9);
-    expect(result.wakes).toBe(1);
-    expect(result.commands).toEqual([]);
   }, 30_000);
   it('mention_brush_no_wake → the spotted command runs locally, nothing sent to Cartesia', async () => {
     const result = await run('mention_brush_no_wake.wav', { finalAfterAudioS: 99, transcript: 'never' }, 2);
@@ -147,14 +128,29 @@ describe.skipIf(!ready)('voice integration (real wake + VAD, fake Cartesia)', ()
     expect(result.wakes).toBe(0);
     expect(result.server.audioBytes).toBe(0);
   }, 30_000);
-  it('conversation_no_command → no command, no wake, nothing sent', async () => {
-    const result = await run('conversation_no_command.wav', { finalAfterAudioS: 99, transcript: 'never' }, 2);
+  it('open mic: speech with no command word is streamed from its start and dispatched for Claude to read', async () => {
+    const transcript = 'I was thinking we could grab lunch later and talk about the project timeline.';
+    const result = await run('conversation_no_command.wav', { finalAfterAudioS: 4, transcript }, 6);
+    expect(result.commands.map(command => [command.text, command.source])).toEqual([[transcript.replace(/\.$/, ''), 'open']]);
+    expect(result.wakes).toBe(1);
+    expect(result.server.audioBytes).toBeGreaterThanOrEqual(4 * 32000);
+    expect(result.binarySendsOutsideStreaming).toBe(0);
+    expect(result.toasts).toEqual(['ok']); // the fake host's result, and nothing else
+  }, 30_000);
+  it('the old wake phrase is ordinary speech now: one open turn, nothing dispatched without a transcript', async () => {
+    const result = await run('double_wake_1s_apart.wav', { finalAfterAudioS: 99, transcript: '' }, 9);
+    expect(result.wakes).toBe(1);
     expect(result.commands).toEqual([]);
+    expect(result.toasts).toEqual([]);
+  }, 30_000);
+  it('silence_5s → nothing sent', async () => {
+    const result = await run('silence_5s.wav', { finalAfterAudioS: 1, transcript: 'never' }, 1);
     expect(result.wakes).toBe(0);
     expect(result.server.audioBytes).toBe(0);
+    expect(result.server.connections).toBe(1); // the startup probe only
   }, 30_000);
-  it('401 on connect → key toast at startup, wake does not connect, no retry loop', async () => {
-    const result = await run('wake_plus_command_one_breath.wav', { finalAfterAudioS: 1, transcript: 'pen down', reject: 401 }, 2);
+  it('401 on connect → key toast at startup, open mic never connects, no retry loop', async () => {
+    const result = await run('conversation_no_command.wav', { finalAfterAudioS: 1, transcript: 'pen down', reject: 401 }, 2);
     expect(result.toasts).toContain('Cartesia key rejected — check CARTESIA_API_KEY');
     expect(result.server.connections).toBe(0);
     expect(result.server.audioBytes).toBe(0);

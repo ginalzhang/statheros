@@ -362,12 +362,16 @@ function enqueueAction(action: LocalActionID, eventId = randomUUID()): Promise<A
   return deliverCommand(configuration, () => generation, action, () => dispatch(action, eventId))
     .catch((error: unknown) => { throw error instanceof Error ? new Error(explainRejection(error.message, status.native)) : error; });
 }
+/** Krita's erase mode as Steady last set it (Krita exposes no state); every E Steady sends goes through dispatch. */
+let eraserOn = false;
 async function dispatch(actionId: LocalActionID, eventId: string = randomUUID()): Promise<Ack | null> {
   if (!isLocalAction(actionId)) throw new Error('Unknown action');
   stopLiveProbe();
   switch (actionId) {
     case 'microphoneOff': await microphone(false); return null;
     case 'tremorFilter': await toggleTremorFilter(); return null;
+    // Krita's E only toggles, so "eraser" presses it only when Steady last left erase mode off.
+    case 'eraser': if (eraserOn) return null; actionId = 'toggleErase'; break;
     case 'openSettings': await openSettings(); return null;
     case 'togglePanel': await collapsePanel(!status.collapsed); return null;
     case 'quit': app.quit(); return null;
@@ -447,6 +451,9 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
     throw new Error('Generic shortcut profiles are unverified configuration previews. Select the fixed Krita profile to execute.');
   }
   const ack = await supervisor.request('action', { generation, eventId, actionId: actionId as ActionID });
+  if (actionId === 'toggleErase') eraserOn = !eraserOn;
+  // Choosing the brush means painting: B keeps Krita's erase mode, so turn it off as well.
+  if (actionId === 'brush' && eraserOn) { await supervisor.request('action', { generation, eventId: randomUUID(), actionId: 'toggleErase' }); eraserOn = false; }
   status.fault = null; publish(); return ack;
 }
 /** Voice "tremor filter": switch to the Tremor Filter stroke mode's smoothing, or back to the smoothing used before it. Sensitivity is kept. */
@@ -716,7 +723,7 @@ async function startNative(): Promise<void> {
   const targetUpdated = (pid: number | null): void => {
     if (supervisor !== next || status.targetPid === pid) return;
     const previous = status.targetPid;
-    status.targetPid = pid;
+    status.targetPid = pid; eraserOn = false; // a relaunched Krita starts with erase mode off
     if (previous === undefined && !canvas && !canvasSetup.state.active) { publish(); return; }
     invalidateCanvas('Krita target changed; set the canvas again.');
     void configuration.run(async () => {

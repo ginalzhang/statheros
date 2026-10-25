@@ -101,7 +101,7 @@ export function VoiceSettings({ voice, keySource, run }: { voice: VoiceSnapshot;
   const ms = (value: { median: number | null; max: number | null }): string => value.median === null ? '—' : `${value.median} ms median · ${value.max} ms max`;
   return <section aria-labelledby="voice-heading">
     <h2 id="voice-heading">Voice commands</h2>
-    <p>With the microphone on, just say a command (“undo”, “redo”, “brush”, “eraser”, “pen down”, “bigger”, “pause”…), even inside a sentence like “switch to the brush”. Commands are recognized on this Mac and nothing is sent anywhere. Saying “{voice.wakePhrase}” first, or {shortcut(voice.hotkey)}, sends that one utterance to Cartesia while the red dot shows.</p>
+    <p>With the microphone on, just say a command (“undo”, “redo”, “brush”, “eraser”, “pen down”, “bigger”, “pause”…), even inside a sentence like “switch to the brush”. Command words are recognized on this Mac and run at once. Anything else you say (“get rid of that last line”) is sent to Cartesia while the red dot shows, then read by Claude when an Anthropic key is set. {shortcut(voice.hotkey)} also sends one utterance. Mute the mic when you don't want to be heard.</p>
     <p role="status">{voiceLabel(voice)} · wake word {voice.wakeReady ? 'ready' : 'unavailable'} · VAD {voice.vad} · Cartesia key {voice.keyPresent ? (keySource === 'env' ? 'from CARTESIA_API_KEY' : 'saved in Keychain') : 'missing'}{voice.sttDisabled ? ' · speech-to-text disabled' : ''}</p>
     <dl><dt>Push to talk</dt><dd>{shortcut(voice.hotkey)} (toggle)</dd><dt>Mute</dt><dd>{shortcut(voice.muteHotkey)} or right-click the mic</dd><dt>Cancel</dt><dd>“cancel”, or click the transcript</dd></dl>
     {keySource !== 'env' && <div className="settings-actions">

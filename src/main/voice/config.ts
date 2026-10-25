@@ -9,6 +9,11 @@ export interface VoiceConfig {
     remnantAliases: string[]; requireAttention: boolean; attentionWindowMs: number;
     /** After an on-device command keyword runs, stream that utterance to Cartesia to hear counts and follow-ons ("undo … three times"). */
     localFollowUp: boolean;
+    /**
+     * Open mic: with the mic on, an utterance with no command word is sent to Cartesia (and Claude) without a wake phrase.
+     * Command words still run on-device at once and keep their utterance local.
+     */
+    openMic: boolean; openPrerollMs: number; openMinSpeechMs: number;
   };
   vad: { threshold: number; hangoverMs: number };
   stt: {
@@ -42,6 +47,8 @@ export const defaultVoiceConfig = (): VoiceConfig => ({
     requireAttention: false, attentionWindowMs: 1500,
     // Off: command words stay on-device and instant. Counts ("undo three times") work after the wake phrase or push-to-talk.
     localFollowUp: false,
+    // Pre-roll covers VAD onset lag only; a longer one could re-send the previous utterance's command word.
+    openMic: true, openPrerollMs: 300, openMinSpeechMs: 250,
   },
   vad: { threshold: 0.5, hangoverMs: 600 },
   stt: {

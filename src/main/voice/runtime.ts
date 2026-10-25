@@ -5,7 +5,7 @@ import { Forwarder, realClock, type PacingClock } from './forwarder';
 import { KEY_MISSING, VoiceStateMachine } from './machine';
 import { SttSession, type SessionSignal, type SocketFactory } from './stt-session';
 import type { InferenceResult } from './inference';
-import { createContext, type CommandEvent, type EarconName, type TimerName, type VoiceAction, type VoiceContext, type VoiceEvent } from './types';
+import { createContext, type CommandEvent, type EarconName, type TimerName, type VoiceAction, type VoiceContext, type VoiceEvent, type VoiceSource } from './types';
 import type { VoiceSnapshot } from '../../shared/voice';
 
 /** What the voice module needs from the app. The module never draws (prompt §4.5 UI). */
@@ -26,7 +26,7 @@ export interface VoiceHost {
 
 export type { VoiceSnapshot } from '../../shared/voice';
 
-export interface UtteranceLatency { wakeToFirstByteMs: number | null; speechEndToFinalMs: number | null; finalToDispatchMs: number | null; source: 'wake' | 'ptt' | 'local' }
+export interface UtteranceLatency { wakeToFirstByteMs: number | null; speechEndToFinalMs: number | null; finalToDispatchMs: number | null; source: VoiceSource }
 
 export interface RuntimeOptions {
   apiKey: string | null;

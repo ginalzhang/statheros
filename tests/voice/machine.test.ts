@@ -86,7 +86,7 @@ describe('§5.5 trace A — turn.end never arrives', () => {
     const h = setup();
     h.advance(4.2);
     expect(h.dispatched()).toEqual([]);
-    expect(h.toasts()).toContain("Heard 'open chro' — try again with 'hey cartesia'");
+    expect(h.toasts()).toContain("Heard 'open chro' — say that again");
     expect(h.state).toBe('PASSIVE');
   });
   it('dispatch_low_confidence=always dispatches the partial', () => {
@@ -771,5 +771,80 @@ describe('follow-up after a local keyword ("undo … three times")', () => {
     expect(h.dispatched()).toEqual(['undo']);
     expect(h.find('OpenStt')).toEqual([]);
     expect(h.state).toBe('EXECUTING');
+  });
+});
+
+describe('open mic (no wake phrase)', () => {
+  /** One VAD segment from `start` to `end` seconds, with the machine clock at its end. */
+  function utterance(h: Harness, start: number, end: number): void {
+    h.now = start; h.vad(true); h.send({ type: 'VadSpeechStart', ts: start });
+    h.now = end; h.vad(false); h.send({ type: 'VadSpeechEnd', ts: end, speechMs: Math.round((end - start - 0.6) * 1000) });
+  }
+
+  it('sends an utterance with no command word to Cartesia from its own start, and dispatches it as open', () => {
+    const h = new Harness();
+    utterance(h, 1, 3);
+    expect(h.state).toBe('WAKING');
+    expect(h.has('PlayEarcon')).toBe(false); // nobody asked, so no earcon
+    expect(h.gate()).toBe(false);
+    h.now = 3.3; h.stt({ type: 'SttConnected' });
+    expect(h.find('StartForwarding', h.last)[0]?.fromTs).toBeCloseTo(0.7);
+    h.now = 4; h.stt({ type: 'SttFinal', text: 'get rid of that last line' });
+    expect(h.find('Dispatch')[0]?.command).toMatchObject({ text: 'get rid of that last line', source: 'open' });
+  });
+
+  it('never replays the previous utterance in the pre-roll', () => {
+    const h = new Harness();
+    h.send({ type: 'LocalCommand', text: 'undo', ts: 1.2 });
+    h.send({ type: 'CommandDone', cmdId: 1, resultText: 'Undone' });
+    utterance(h, 1, 1.9);
+    expect(h.state).not.toBe('WAKING'); // the command word ran; that utterance stays local
+    h.advance(3);
+    utterance(h, 2.05, 4);
+    h.now = 4.3; h.stt({ type: 'SttConnected' });
+    expect(h.find('StartForwarding', h.last)[0]?.fromTs).toBeCloseTo(1.9);
+  });
+
+  it('ignores blips, muted mics, a missing key, and the setting being off', () => {
+    const blip = new Harness(); utterance(blip, 1, 1.75);
+    const muted = new Harness(); muted.send({ type: 'Mute' }); utterance(muted, 1, 3);
+    const noKey = new Harness({ sttDisabled: true }); utterance(noKey, 1, 3);
+    const off = new Harness({ config: c => { c.wake.openMic = false; } }); utterance(off, 1, 3);
+    for (const h of [blip, muted, noKey, off]) { expect(h.has('OpenStt', h.actions)).toBe(false); expect(h.toasts()).toEqual([]); }
+  });
+
+  it('a command word spotted after the cloud took the utterance is not run twice', () => {
+    const h = new Harness();
+    utterance(h, 1, 2);
+    h.send({ type: 'LocalCommand', text: 'undo', ts: 2.2 });
+    expect(h.dispatched()).toEqual([]);
+    h.now = 2.3; h.stt({ type: 'SttConnected' });
+    h.now = 3; h.stt({ type: 'SttFinal', text: 'undo' });
+    expect(h.dispatched()).toEqual(['undo']);
+  });
+
+  it('stays quiet when Cartesia fails or the speech was not a request', () => {
+    const failed = new Harness();
+    utterance(failed, 1, 3);
+    failed.stt({ type: 'SttError', code: 1006, message: 'gone', permanent: false });
+    expect(failed.state).toBe('PASSIVE');
+    expect(failed.toasts()).toEqual([]);
+
+    const chatter = new Harness();
+    utterance(chatter, 1, 3);
+    chatter.now = 3.3; chatter.stt({ type: 'SttConnected' });
+    chatter.now = 4; chatter.stt({ type: 'SttFinal', text: "yeah I'll be there in five" });
+    chatter.send({ type: 'CommandDone', cmdId: 1, resultText: '' });
+    expect(chatter.state).toBe('PASSIVE');
+    expect(chatter.toasts()).toEqual([]);
+  });
+
+  it('a failed request from open mic still reports why', () => {
+    const h = new Harness();
+    utterance(h, 1, 3);
+    h.now = 3.3; h.stt({ type: 'SttConnected' });
+    h.now = 4; h.stt({ type: 'SttFinal', text: 'put the pen on the canvas' });
+    h.send({ type: 'CommandFailed', cmdId: 1, message: 'Close Settings before pointer actions.' });
+    expect(h.toasts()).toContain('Close Settings before pointer actions.');
   });
 });

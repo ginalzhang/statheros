@@ -16,8 +16,11 @@ export const UTTERANCE_TIMERS: readonly TimerName[] = ['watchdog', 'forced_end']
 /** Survive every state and generation; never ignored by the gen rule. */
 export const UNSTAMPED_TIMERS: readonly TimerName[] = ['wake_gate_tail', 'gate_cap'];
 
+/** `open`: an utterance with no command word, sent to Cartesia without a wake phrase (open-mic listening). */
+export type VoiceSource = 'wake' | 'ptt' | 'local' | 'open';
+
 export interface CommandEvent {
-  cmdId: number; text: string; kind: 'command' | 'dictation'; source: 'wake' | 'ptt' | 'local'; confidence: Confidence;
+  cmdId: number; text: string; kind: 'command' | 'dictation'; source: VoiceSource; confidence: Confidence;
   utteranceGen: number; sessionId: number; tWake: number | null; tSpeechEnd: number | null; tFinal: number;
   /** The on-device keyword that already ran once for this utterance; `text` is the full cloud transcript around it. */
   alreadyRan?: string;
@@ -88,7 +91,7 @@ export type VoiceAction =
 export interface LiveTimer { deadline: number; stamp: number; seq: number }
 
 export interface VoiceContext {
-  state: VoiceState; gen: number; sessionId: number | null; sessionCounter: number; source: 'wake' | 'ptt' | 'local' | null; endpoint: Endpoint;
+  state: VoiceState; gen: number; sessionId: number | null; sessionCounter: number; source: VoiceSource | null; endpoint: Endpoint;
   pttMode: 'hold' | 'toggle'; hotkeyDownTs: number | null; releaseDeferred: boolean; detectionTs: number | null; lastWakeTs: number;
   vadActive: boolean; vadRawActive: boolean; lastVadEndTs: number | null; speechMs: number | null;
   lastPartial: string | null; lastPartialEager: boolean; pendingPrefix: string | null; remnantTurns: number; closeSent: boolean; sttConnected: boolean;
@@ -101,6 +104,8 @@ export interface VoiceContext {
   followUp: string | null;
   /** Audio up to here went to the cloud for a follow-up; a keyword spotted in it is already in that transcript. */
   cloudHeardUntil: number;
+  /** Start of the current VAD speech segment, and where an open-mic turn starts forwarding (never before the previous segment). */
+  speechStartTs: number | null; openFromTs: number | null;
 }
 
 export function createContext(options: { abortSupported: boolean; sttDisabled?: boolean; sttDisabledMessage?: string | null }): VoiceContext {
@@ -112,6 +117,7 @@ export function createContext(options: { abortSupported: boolean; sttDisabled?: 
     wakeGatedUntil: -Infinity, livePlaybacks: new Set(), gatingPlayId: null, timers: new Map(), timerSeq: 0,
     sttDisabled: options.sttDisabled ?? false, sttDisabledMessage: options.sttDisabledMessage ?? null, deviceSwapUntil: -Infinity,
     mutedReason: null, lastAttentionTs: -Infinity, lastError: null, tSpeechEnd: null, lastLocalCommand: null, followUp: null, cloudHeardUntil: -Infinity,
+    speechStartTs: null, openFromTs: null,
   };
 }
 

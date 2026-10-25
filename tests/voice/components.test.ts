@@ -182,8 +182,8 @@ describe('Steady voice vocabulary', () => {
     expect(parseSteadyCommand('microphone off')).toBe('microphoneOff');
     expect(parseSteadyCommand('Here okay, undo.')).toBe('undo');
     expect(parseSteadyCommand('a cartesia, can you switch to the brush please')).toBe('brush');
-    expect(parseSteadyCommand('okay now erase this part')).toBe('toggleErase');
-    expect(parseSteadyCommand('use the eraser')).toBe('toggleErase');
+    expect(parseSteadyCommand('okay now erase this part')).toBe('eraser');
+    expect(parseSteadyCommand('use the eraser')).toBe('eraser');
     expect(parseSteadyCommand('put the pen down')).toBe('penDown');
     expect(parseSteadyCommand('make it a bit bigger')).toBe('bigger');
     expect(parseSteadyCommand('mic off')).toBe('microphoneOff');
