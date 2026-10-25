@@ -5,6 +5,8 @@ import { extractAnchor, initializeDelegate } from './tracking';
 
 type InitMessage = { type: 'initialize'; mode: Mode; assetRoot: string };
 type FrameMessage = { type: 'frame'; frameId: number; generation: number; captureTimestamp: number; bitmap: ImageBitmap };
+/** Forehead, chin, cheeks, nose tip, eye and mouth corners (Face Mesh indices). */
+const FACE_OUTLINE = [10, 152, 234, 454, 1, 33, 133, 362, 263, 61, 291];
 let detector: FaceLandmarker | HandLandmarker | null = null;
 let mode: Mode = 'head';
 let failed = false;
@@ -43,7 +45,10 @@ self.onmessage = async (event: MessageEvent<InitMessage | FrameMessage>) => {
     const handedness = 'handedness' in result ? result.handedness : [];
     const label = handedness.length === 1 ? handedness[0]?.[0]?.categoryName : null;
     const selectedHand = label === 'Left' || label === 'Right' ? label : null;
-    self.postMessage({ type: 'sample', sample: { generation: message.generation, frameId: message.frameId, captureTimestamp: message.captureTimestamp, mode, valid: anchor.valid, anchor: anchor.anchor, qualityReason: anchor.reason, selectedHand } });
+    // Display-only landmarks for the preview overlay: every hand point, or a face outline subset.
+    const first = landmarks[0] ?? [];
+    const overlay = (mode === 'head' ? FACE_OUTLINE.map(index => first[index]) : first).filter(Boolean).map(point => ({ x: point!.x, y: point!.y }));
+    self.postMessage({ type: 'sample', sample: { generation: message.generation, frameId: message.frameId, captureTimestamp: message.captureTimestamp, mode, valid: anchor.valid, anchor: anchor.anchor, qualityReason: anchor.reason, selectedHand }, landmarks: overlay });
   } catch (error) {
     failed = true;
     self.postMessage({ type: 'fault', message: `Inference failed; restart the probe explicitly: ${String(error)}` });

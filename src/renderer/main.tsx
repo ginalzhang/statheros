@@ -9,6 +9,7 @@ import { useVoice, useVoiceCapture, VoiceSettings, VoiceStrip } from './voice-ui
 import { BunnyMark } from './logo';
 import { Icon, type IconName } from './icons';
 import { activePreset, gainFromPercent, sensitivityPercent, STROKE_PRESETS } from './stroke-presets';
+import { rejectionHint } from './tracking';
 
 const initialStatus: ProbeStatus = { native: null, displays: [], fault: null, collapsed: false, settingsOpen: false, generation: 0, realInput: false, microphoneEnabled: false };
 const initialProbe: ProbeReport = { message: 'Camera off', frames: 0, delegate: null, running: false };
@@ -148,7 +149,9 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
   const palm = (status.settings?.mode ?? 'head') === 'palm';
   const penDown = Boolean(status.native?.buttonDown);
   // Never show a false Active/Connected (handoff §04): status comes from the helper and the live feed.
-  const tracking: [string, string] = !native ? ['Connecting', 'muted'] : native === 'FAULT' ? ['Unavailable', 'bad'] : native === 'PAUSED' ? ['Paused', 'good strong'] : native === 'SETUP' ? ['Setting canvas', 'cyan'] : !probe.running ? ['No camera', 'bad'] : ['Active', 'good'];
+  const hint = probe.running ? rejectionHint(probe.rejection, palm ? 'palm' : 'head') : null;
+  const tracking: [string, string] = !native ? ['Connecting', 'muted'] : native === 'FAULT' ? ['Unavailable', 'bad'] : native === 'PAUSED' ? ['Paused', 'good strong'] : native === 'SETUP' ? ['Setting canvas', 'cyan'] : !probe.running ? ['No camera', 'bad']
+    : probe.confirmationRequired ? ['Hand lost', 'bad'] : probe.rejection ? [palm ? 'No hand' : 'No face', 'muted'] : ['Active', 'good'];
   const paused = !native || native === 'PAUSED' || native === 'FAULT';
   const preset = activePreset(calibration);
   const chips = useRef<HTMLDivElement | null>(null);
@@ -181,9 +184,11 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
         <h3>{palm ? 'Hand Preview' : 'Head Preview'}</h3>
         <canvas ref={previewRef} width={268} height={150} aria-label="Mirrored local camera preview" className="camera-preview" />
         {!probe.running && <p className="preview-empty">{probe.message}</p>}
-        {probe.confirmationRequired && <button className="chip confirm" data-action="confirmHand" onClick={() => action('confirmHand')}>Confirm selected hand</button>}
         <footer><span className={`dot ${tracking[1].startsWith('good') && !paused ? 'on' : ''}`} />{paused ? 'Tracking Paused' : tracking[0] === 'Active' ? 'Tracking Active' : tracking[0]}<span className="divider" /><span className="muted">{penDown ? 'Pen Down' : 'Pen Up'}</span></footer>
-      </section></div>
+      </section>
+        {hint && <p className={`preview-hint${probe.confirmationRequired ? ' warn' : ''}`} role="status">{hint}</p>}
+        {probe.confirmationRequired && <button className="confirm-hand" data-action="confirmHand" onClick={() => action('confirmHand')}>Confirm selected hand{probe.selectedHand ? ` (${probe.selectedHand})` : ''}</button>}
+      </div>
       <section className="panel-section" aria-labelledby="input-title">
         <h2 id="input-title">Input</h2>
         <p className="label">Drawing State</p>
