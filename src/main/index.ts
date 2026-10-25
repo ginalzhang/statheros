@@ -21,6 +21,10 @@ import { deliverCommand } from './command-delivery';
 import { SettingsStore } from './settings';
 import { defaultSettings, withCalibration } from '../shared/settings';
 import { isCalibrationV1 } from '../renderer/engine';
+import { ElectronVoice } from './voice/electron-voice';
+import { parseSteadyCommand, VOICE_LABELS } from './voice/steady-commands';
+import type { CommandEvent } from './voice/types';
+import type { VoiceCaptureReport } from '../shared/voice';
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
 
@@ -37,6 +41,7 @@ let panelGeometryEpoch = 0;
 let movingPanelProgrammatically = false;
 const bindingInstaller = new GlobalBindingInstaller(globalShortcut);
 let panel: BrowserWindow | null = null, settings: BrowserWindow | null = null, supervisor: NativeSupervisor | null = null;
+let voice: ElectronVoice | null = null;
 let quitting = false, generation = 1;
 let settingsStore: SettingsStore;
 const configuration = new ConfigurationQueue();
@@ -193,15 +198,19 @@ async function collapsePanel(collapsed: boolean): Promise<void> {
   generation++; await configureControl(); publish();
 }
 
+/** Voice input (Cartesia STT + local wake word) replaces the deferred native speech path; the helper's microphone stays off. */
 async function microphone(enabled: boolean): Promise<void> {
-  if (enabled) throw new Error('Voice input is deferred to Phase 04; microphone stays off.');
-  const nextSession = randomUUID(); speechSession = enabled ? nextSession : null; speechSeen.clear();
-  if(enabled){status.speechDiagnostics=undefined;publish();}
-  const request=++microphoneRequest;
-  try {await supervisor?.request('microphone', { enabled, speechSession:nextSession });if(request===microphoneRequest){if(!enabled)status.microphoneEnabled=false;publish();}}
-  catch(error){if(request===microphoneRequest){speechSession=null;status.microphoneEnabled=false;publish();}throw error;}
+  if (!voice) throw new Error('Voice input is unavailable.');
+  voice.setMicrophone(enabled);
 }
-let microphoneRequest=0;
+/** <<COMMAND_ENTRYPOINT>> for voice: the shared dispatcher, resolving after the native ack. */
+async function executeVoiceCommand(command: CommandEvent): Promise<string | null> {
+  if (command.kind === 'dictation') throw new Error("Dictation isn't available in Steady");
+  const action = parseSteadyCommand(command.text);
+  if (!action) throw new Error(`“${command.text.slice(0, 40)}” isn't a Steady command`);
+  await enqueueAction(action);
+  return VOICE_LABELS[action];
+}
 function initialPanelPosition(): {x:number;y:number} {
   const display = screen.getAllDisplays().find(d=>d.internal) ?? screen.getPrimaryDisplay();
   return { x:display.workArea.x+display.workArea.width-320-16, y:display.workArea.y+16 };
@@ -294,7 +303,11 @@ function installIPC(): void {
     await pause('Selected display changed; canvas invalidated');generation++;status.selectedDisplayId=displayId;buttons=[];status.canvasConfirmed=false;invalidateCanvas();updateDisplays(status.displays,true); await configureControl();
   }));
   handle('microphone',async(enabled:unknown)=>{if(typeof enabled!=='boolean')throw new Error('Invalid microphone flag');await microphone(enabled);});
-  handle('install-speech-assets',async()=>{throw new Error('Speech setup is deferred to Phase 04.');});
+  handle('install-speech-assets',async()=>{throw new Error('Apple speech assets are not used; voice uses Cartesia.');});
+  handle('voice-status',()=>({snapshot:voice?.snapshot()??null,keySource:voice?.keySource??null}));
+  handle('voice-key',(key:unknown)=>{if(key!==null&&(typeof key!=='string'||key.length>256))throw new Error('Invalid key');voice?.setKey(key);});
+  handle('voice-selftest',()=>voice?.selfTest()??{ok:false,samplesPerSecond:0,peakDbfs:null,message:'Voice unavailable'});
+  handle('voice-latency',()=>voice?.latency()??null);
   handle('release-input',()=>{
     stopLiveProbe();
     releaseRealInput();
@@ -324,6 +337,15 @@ function installIPC(): void {
     pointer = sample.valid ? { position: position as Point, timestamp: sample.captureTimestamp, generation } : null;
     if(supervisor?.state?.generation===generation)supervisor.submit(sample, sample.valid ? position as Point : null, sample.captureTimestamp);
   });
+  ipcMain.on('steady:voice-frame',(event,pcm:unknown)=>{if(event.sender!==panel?.webContents||event.senderFrame!==event.sender.mainFrame)return;voice?.frame(pcm);});
+  ipcMain.on('steady:voice-report',(event,report:unknown)=>{
+    if(event.sender!==panel?.webContents||!isObject(report)||typeof report.type!=='string')return;
+    if(['opened','deviceChanged'].includes(report.type))voice?.report({type:report.type} as VoiceCaptureReport);
+    else if(report.type==='failed'&&typeof report.reason==='string')voice?.report({type:'failed',reason:report.reason.slice(0,200)});
+    else if((report.type==='earconStarted'||report.type==='earconStopped')&&typeof report.playId==='string'&&report.playId.length<=64)voice?.report({type:report.type,playId:report.playId});
+  });
+  ipcMain.on('steady:voice-button',(event,kind:unknown)=>{trusted(event);if(kind==='press'||kind==='longpress')voice?.button(kind);});
+  ipcMain.on('steady:voice-cancel',(event)=>{trusted(event);voice?.cancel();});
   ipcMain.on('steady:clock-fault',(event,message:unknown)=>{trusted(event);void pause(typeof message==='string'?message:'Renderer clock synchronization failed');});
 }
 async function startNative(): Promise<void> {
@@ -407,6 +429,10 @@ async function main(): Promise<void> {
     }).catch(error=>fault(String(error))).finally(()=>{if(epoch===panelGeometryEpoch)panelGeometryPending=false;});},100);
   });
   installIPC();await loadView(panel,'panel');panel.showInactive();
+  voice=new ElectronVoice({buildDir:__dirname,voiceRoot:path.join(resourcesRoot(),'voice'),packaged:app.isPackaged,userData:app.getPath('userData'),
+    panel:()=>panel,windows:()=>[panel,settings],execute:executeVoiceCommand,microphoneChanged:open=>{status.microphoneEnabled=open;publish();}});
+  voice.start();
+  app.on('browser-window-focus',()=>voice?.appFocused());
   await startNative(); installBindings();
   powerMonitor.on('suspend',()=>{void pause('suspend');});
   powerMonitor.on('lock-screen',()=>{void pause('lock-screen');});
@@ -426,7 +452,7 @@ async function main(): Promise<void> {
   publish();
 }
 app.on('before-quit',event=>{
-  if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;quitting=true;bindingInstaller.clear();
+  if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;quitting=true;bindingInstaller.clear();voice?.stop();
   stopLiveProbe();
   void supervisor?.stop().finally(()=>app.quit());if(!supervisor)app.quit();
 });

@@ -5,6 +5,7 @@ import { ALL_CONTROLS, defaultBindings, kritaProfile, type GlobalBindings, type 
 import { CameraProbe, type ProbeReport } from './probe';
 import './style.css';
 import { SetupController, type SetupSnapshot } from './setup-controller';
+import { useVoice, useVoiceCapture, VoiceSettings, VoiceStrip } from './voice-ui';
 
 const initialStatus: ProbeStatus = { native: null, displays: [], fault: null, collapsed: false, settingsOpen: false, generation: 0, realInput: false, microphoneEnabled: false };
 const initialProbe: ProbeReport = { message: 'Camera off', frames: 0, delegate: null, running: false };
@@ -129,7 +130,14 @@ function App(): React.JSX.Element {
 
   const action = (id: LocalActionID): void => run(() => window.steady.localAction(id));
   const feedback = status.nativeFault ?? error ?? status.fault;
-  if (isSettings) return <Settings status={status} probe={probe} setup={setup} feedback={feedback} run={run} channel={channelRef} />;
+  const { voice, keySource } = useVoice();
+  if (isSettings) return <Settings status={status} probe={probe} setup={setup} feedback={feedback} run={run} channel={channelRef} voice={<VoiceSettings voice={voice} keySource={keySource} run={run} />} />;
+  return <Panel status={status} probe={probe} setup={setup} feedback={feedback} action={action} previewRef={previewRef} voice={<VoiceStrip voice={voice} />} />;
+}
+
+/** The panel renderer owns camera and microphone capture. */
+function Panel({ status, probe, setup, feedback, action, previewRef, voice }: { status: ProbeStatus; probe: ProbeReport; setup: SetupSnapshot | null; feedback: string | null; action: (id: LocalActionID) => void; previewRef: React.RefObject<HTMLCanvasElement | null>; voice: React.ReactNode }): React.JSX.Element {
+  useVoiceCapture();
   return <main className={`panel ${status.collapsed ? 'collapsed' : ''}`}>
     <header className="panel-header">
       <strong>Steady</strong>
@@ -139,6 +147,7 @@ function App(): React.JSX.Element {
       <button data-action="quit" onClick={() => action('quit')} aria-label="Quit Steady">×</button>
     </header>
     <div className="compact-status" role="status">{status.native?.state ?? 'Connecting'} · {status.realInput ? 'Real input' : 'Fake input'} · Mic {status.microphoneEnabled ? 'on' : 'off'}</div>
+    {voice}
     <canvas ref={previewRef} width={280} height={140} hidden={status.collapsed} aria-label="Mirrored local camera preview" className="camera-preview" />
     {!status.collapsed && <div className="panel-content">
       <section className="health" aria-label="Probe status">
@@ -151,12 +160,12 @@ function App(): React.JSX.Element {
       <p role="status">{status.canvasSetup?.message ?? (status.canvasConfirmed ? 'Canvas confirmed · Resume required' : 'Canvas confirmation required')}</p>
       <div className="settings-actions"><button data-action="beginCanvas" onClick={() => action('beginCanvas')}>Set canvas</button><button data-action="cancelCanvas" onClick={() => action('cancelCanvas')} disabled={!status.canvasSetup?.active}>Cancel canvas</button></div>
       <div className="actions">{actionLabels.map(([id, label]) => <button key={id} data-action={id} onClick={() => action(id)}>{label}</button>)}</div>
-      <p className="hint">F8: {status.canvasSetup?.active ? 'mark corner' : 'pen toggle'} · F9: pause<br />Use Fn with function keys if macOS requires it. Voice is deferred. Confirm calibration and canvas before Resume.</p>
+      <p className="hint">F8: {status.canvasSetup?.active ? 'mark corner' : 'pen toggle'} · F9: pause<br />Use Fn with function keys if macOS requires it. Confirm calibration and canvas before Resume.</p>
     </div>}
   </main>;
 }
 
-function Settings({ status, probe, setup, feedback, run, channel }: { status: ProbeStatus; probe: ProbeReport; setup: SetupSnapshot | null; feedback: string | null; run: (work: () => Promise<void>) => void; channel: React.RefObject<BroadcastChannel | null> }): React.JSX.Element {
+function Settings({ status, probe, setup, feedback, run, channel, voice }: { status: ProbeStatus; probe: ProbeReport; setup: SetupSnapshot | null; feedback: string | null; run: (work: () => Promise<void>) => void; channel: React.RefObject<BroadcastChannel | null>; voice: React.ReactNode }): React.JSX.Element {
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [cameraId, setCameraId] = useState(status.settings?.cameraId ?? '');
   const [mode, setMode] = useState<Mode>(status.settings?.mode ?? 'head');
@@ -226,13 +235,7 @@ function Settings({ status, probe, setup, feedback, run, channel }: { status: Pr
       <p>Renderer receipt-to-map p95 {setup?.metrics.receiptToMappedP95Ms?.toFixed(2) ?? '—'} ms. This is processing time; it excludes smoothing delay and native event latency. This metric excludes native output.</p>
       <pre data-testid="tracking-diagnostics">{JSON.stringify({ cameraId: status.settings?.cameraId, mode: status.settings?.mode, probe, baseline: setup?.baseline, metrics: setup?.metrics }, null, 2)}</pre>
     </section>
-    <section aria-labelledby="voice-heading">
-      <h2 id="voice-heading">Voice input</h2>
-      <p role="status">Voice input is deferred to Phase 04. Use the panel controls or configured keys.</p>
-      <p role="status">Microphone: {status.microphoneEnabled ? 'on' : 'off'}</p>
-      <p>Microphone activation and speech setup are unavailable in this build. Camera and native-input probes remain available.</p>
-      <button onClick={() => run(() => window.steady.microphone(false))}>Disable microphone</button>
-    </section>
+    {voice}
     <section aria-labelledby="native-heading"><h2 id="native-heading">Native status</h2>
       {status.nativeFault && <p role="alert" className="error">Native helper fault: {status.nativeFault}. Recover starts a fresh helper session and remains paused; camera Stop remains available.</p>}
       <p>{status.realInput ? 'Real input enabled for this session' : 'Fake input backend'} · {status.native?.state ?? 'Connecting'} · {status.native?.reason}</p>

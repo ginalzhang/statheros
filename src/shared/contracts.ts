@@ -68,4 +68,14 @@ export interface SteadyAPI {
   releaseInput(): Promise<void>;
   registerButtons(buttons: { actionId: LocalActionID; rect: Rect }[]): void;
   quit(): Promise<void>;
+  voiceStatus(): Promise<{ snapshot: import('./voice').VoiceSnapshot | null; keySource: 'env' | 'settings' | null }>;
+  onVoice(callback: (snapshot: import('./voice').VoiceSnapshot | null, keySource: 'env' | 'settings' | null) => void): () => void;
+  onVoiceCapture(callback: (command: import('./voice').VoiceCaptureCommand) => void): () => void;
+  voiceFrame(pcm: ArrayBuffer): void;
+  voiceReport(report: import('./voice').VoiceCaptureReport): void;
+  voiceButton(kind: 'press' | 'longpress'): void;
+  voiceCancel(): void;
+  setVoiceKey(key: string | null): Promise<void>;
+  voiceSelfTest(): Promise<import('./voice').VoiceSelfTest>;
+  voiceLatency(): Promise<import('./voice').VoiceLatencyReport | null>;
 }

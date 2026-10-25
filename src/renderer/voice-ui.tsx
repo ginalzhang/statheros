@@ -1,0 +1,118 @@
+import { useEffect, useRef, useState } from 'react';
+import { initialVoiceSnapshot, type VoiceLatencyReport, type VoiceSelfTest, type VoiceSnapshot } from '../shared/voice';
+import { Earcons, VoiceCapture } from './voice-capture';
+
+/** Subscribes to the main-process voice snapshot (the module never draws; the app renders it). */
+export function useVoice(): { voice: VoiceSnapshot; keySource: 'env' | 'settings' | null } {
+  const [state, setState] = useState<{ voice: VoiceSnapshot; keySource: 'env' | 'settings' | null }>({ voice: initialVoiceSnapshot(), keySource: null });
+  useEffect(() => {
+    void window.steady.voiceStatus().then(({ snapshot, keySource }) => { if (snapshot) setState({ voice: snapshot, keySource }); }).catch(() => undefined);
+    return window.steady.onVoice((snapshot, keySource) => { if (snapshot) setState({ voice: snapshot, keySource }); });
+  }, []);
+  return state;
+}
+
+/** The panel owns the single microphone stream and the earcon output. */
+export function useVoiceCapture(): void {
+  useEffect(() => {
+    const capture = new VoiceCapture(
+      pcm => window.steady.voiceFrame(pcm),
+      reason => window.steady.voiceReport({ type: 'failed', reason }),
+      () => window.steady.voiceReport({ type: 'opened' }),
+      () => window.steady.voiceReport({ type: 'deviceChanged' }),
+    );
+    const earcons = new Earcons(playId => window.steady.voiceReport({ type: 'earconStarted', playId }), playId => window.steady.voiceReport({ type: 'earconStopped', playId }));
+    const off = window.steady.onVoiceCapture(command => {
+      if (command.type === 'open') void capture.open();
+      if (command.type === 'close') capture.close();
+      if (command.type === 'earcon') earcons.play(command.name, command.playId);
+      if (command.type === 'stopPlayback') earcons.stopAll();
+    });
+    return () => { off(); capture.close(); };
+  }, []);
+}
+
+export const voiceLabel = (voice: VoiceSnapshot): string => {
+  switch (voice.state) {
+    case 'DISABLED': return 'Voice unavailable';
+    case 'MUTED': return 'Mic off';
+    case 'PASSIVE': return voice.inFlight ? 'Working…' : voice.wakeReady ? `Say “${voice.wakePhrase}”` : 'Push-to-talk ready';
+    case 'WAKING': case 'LISTENING': return 'Listening…';
+    case 'PTT_ACTIVE': return 'Speak · press again to send';
+    case 'PROCESSING': return 'Thinking…';
+    case 'EXECUTING': return voice.working ? 'Working…' : 'Got it';
+    case 'FEEDBACK': return 'Done';
+    case 'ERROR': return voice.lastError ?? 'Voice error';
+  }
+};
+const listening = (voice: VoiceSnapshot): boolean => ['WAKING', 'LISTENING', 'PTT_ACTIVE'].includes(voice.state);
+const shortcut = (accelerator: string): string => accelerator.replace('CommandOrControl', '⌘').replace('Shift', '⇧').replace('Space', 'Space').replace(/\+/g, '');
+
+export function MicGlyph({ muted }: { muted: boolean }): React.JSX.Element {
+  return <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="9" y="3" width="6" height="11" rx="3" />
+    <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6" />
+    {muted && <path d="M4 4l16 16" />}
+  </svg>;
+}
+
+/** Panel strip: mic button, state, cloud dot, live transcript, toast. Always on top with the panel. */
+export function VoiceStrip({ voice }: { voice: VoiceSnapshot }): React.JSX.Element {
+  const press = useRef<{ timer: ReturnType<typeof setTimeout>; long: boolean } | null>(null);
+  const [toast, setToast] = useState<VoiceSnapshot['toast']>(null);
+  const [transcriptVisible, setTranscriptVisible] = useState(false);
+  useEffect(() => {
+    if (!voice.toast) return;
+    setToast(voice.toast);
+    const timer = setTimeout(() => setToast(current => current?.id === voice.toast?.id ? null : current), 4000);
+    return () => clearTimeout(timer);
+  }, [voice.toast?.id]);
+  useEffect(() => {
+    if (voice.transcript) setTranscriptVisible(true);
+    if (voice.state === 'FEEDBACK' || voice.state === 'PASSIVE') { const timer = setTimeout(() => setTranscriptVisible(false), 3000); return () => clearTimeout(timer); }
+    return undefined;
+  }, [voice.transcript, voice.state]);
+  const muted = voice.state === 'MUTED' || voice.state === 'DISABLED';
+  const down = (): void => { press.current = { long: false, timer: setTimeout(() => { if (press.current) { press.current.long = true; window.steady.voiceButton('longpress'); } }, 600) }; };
+  const up = (): void => { const current = press.current; press.current = null; if (!current) return; clearTimeout(current.timer); if (!current.long) window.steady.voiceButton('press'); };
+  return <section className={`voice-strip state-${voice.state.toLowerCase()}`} aria-label="Voice commands">
+    <button className={`mic-button${listening(voice) ? ' live' : ''}${muted ? ' muted' : ''}`} aria-pressed={!muted} aria-label={muted ? 'Turn microphone on' : listening(voice) ? 'Stop listening' : 'Push to talk'}
+      title={`Click: ${muted ? 'turn mic on' : 'push to talk'} (${shortcut(voice.hotkey)}). Right-click or hold: mute (${shortcut(voice.muteHotkey)}).`}
+      onPointerDown={down} onPointerUp={up} onPointerLeave={() => { if (press.current) { clearTimeout(press.current.timer); press.current = null; } }}
+      onContextMenu={event => { event.preventDefault(); window.steady.voiceButton('longpress'); }}>
+      <MicGlyph muted={muted} />
+    </button>
+    <div className="voice-text">
+      <p className="voice-state" role="status">{voiceLabel(voice)}{voice.cloudOn && <span className="cloud-dot" title="Audio is streaming to Cartesia" aria-label="Streaming to Cartesia" />}</p>
+      {transcriptVisible && voice.transcript
+        ? <p className={`voice-transcript${voice.transcriptFinal ? ' final' : ''}`} onClick={() => window.steady.voiceCancel()} title="Click to cancel">{voice.transcript}</p>
+        : <p className="voice-hint">{muted ? 'Nothing is heard until you turn the mic on' : `${shortcut(voice.hotkey)} to talk · right-click to mute`}</p>}
+    </div>
+    {toast && <p className={`voice-toast ${toast.level}`} role="alert">{toast.message}</p>}
+  </section>;
+}
+
+export function VoiceSettings({ voice, keySource, run }: { voice: VoiceSnapshot; keySource: 'env' | 'settings' | null; run: (work: () => Promise<void>) => void }): React.JSX.Element {
+  const [key, setKey] = useState('');
+  const [selfTest, setSelfTest] = useState<VoiceSelfTest | null>(null);
+  const [latency, setLatency] = useState<VoiceLatencyReport | null>(null);
+  const ms = (value: { median: number | null; max: number | null }): string => value.median === null ? '—' : `${value.median} ms median · ${value.max} ms max`;
+  return <section aria-labelledby="voice-heading">
+    <h2 id="voice-heading">Voice commands</h2>
+    <p>Say “{voice.wakePhrase}”, then a Steady command such as “pen down”, “undo” or “bigger”. The microphone is open locally for the wake word; nothing leaves this computer until the red dot appears. Speech is then transcribed by Cartesia.</p>
+    <p role="status">{voiceLabel(voice)} · wake word {voice.wakeReady ? 'ready' : 'unavailable'} · VAD {voice.vad} · Cartesia key {voice.keyPresent ? (keySource === 'env' ? 'from CARTESIA_API_KEY' : 'saved in Keychain') : 'missing'}{voice.sttDisabled ? ' · speech-to-text disabled' : ''}</p>
+    <dl><dt>Push to talk</dt><dd>{shortcut(voice.hotkey)} (toggle)</dd><dt>Mute</dt><dd>{shortcut(voice.muteHotkey)} or right-click the mic</dd><dt>Cancel</dt><dd>“cancel”, or click the transcript</dd></dl>
+    {keySource !== 'env' && <div className="settings-actions">
+      <label className="key-field">Cartesia API key<input type="password" autoComplete="off" spellCheck={false} placeholder={voice.keyPresent ? 'Saved — paste to replace' : 'sk_car_…'} value={key} onChange={event => setKey(event.target.value)} /></label>
+      <button disabled={!key.trim()} onClick={() => run(async () => { await window.steady.setVoiceKey(key); setKey(''); })}>Save key</button>
+      {voice.keyPresent && <button onClick={() => run(() => window.steady.setVoiceKey(null))}>Remove key</button>}
+    </div>}
+    <div className="settings-actions">
+      <button onClick={() => run(() => window.steady.microphone(voice.state === 'MUTED'))}>{voice.state === 'MUTED' ? 'Turn microphone on' : 'Turn microphone off'}</button>
+      <button onClick={() => run(async () => setSelfTest(await window.steady.voiceSelfTest()))}>Run mic self-test</button>
+      <button onClick={() => run(async () => setLatency(await window.steady.voiceLatency()))}>Show latency</button>
+    </div>
+    {selfTest && <p role="status" className={selfTest.ok ? '' : 'error'}>Self-test: {selfTest.message}</p>}
+    {latency && <p role="status">{latency.utterances} utterances · wake→first byte {ms(latency.wakeToFirstByte)} · speech end→final {ms(latency.speechEndToFinal)} · final→dispatch {ms(latency.finalToDispatch)} · inference {latency.inferenceMeanMs ?? '—'} ms/frame</p>}
+  </section>;
+}

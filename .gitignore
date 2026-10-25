@@ -9,3 +9,6 @@ playwright-report/
 resources/assets/
 resources/bin/
 .DS_Store
+resources/voice/models/
+resources/voice/addon/
+.gstack/

@@ -48,17 +48,17 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     // Settings and panel are separate packaged file:// windows. Verify their
     // control/report transport without opening any camera or microphone.
     const settingsPromise=app.waitForEvent('window');await page.evaluate(()=>window.steady.openSettings());const settings=await settingsPromise;await settings.waitForLoadState();
-    await expect(settings.getByText('Voice input is deferred to Phase 04. Use the panel controls or configured keys.')).toBeVisible();
-    await expect(settings.getByRole('button',{name:'Enable microphone',exact:true})).toHaveCount(0);
-    await expect(settings.getByRole('button',{name:'Set up speech assets',exact:true})).toHaveCount(0);
-    for(const attempt of ['microphone','assets'] as const){
-      const error=await settings.evaluate(async attempt=>{try{if(attempt==='microphone')await window.steady.microphone(true);else await window.steady.installSpeechAssets();return null;}catch(error){return String(error);}},attempt);
-      expect(error).toContain('deferred to Phase 04');
-    }
-    await settings.getByRole('button',{name:'Disable microphone',exact:true}).click();
+    // Voice launches microphone-off (plan §2): wake listening needs an explicit mic-on, so no prompt here.
+    await expect(settings.getByRole('heading',{name:'Voice commands',exact:true})).toBeVisible();
+    await expect(settings.getByRole('button',{name:'Turn microphone on',exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Turn microphone on',exact:true})).toBeVisible();
+    const assetError=await settings.evaluate(async()=>{try{await window.steady.installSpeechAssets();return null;}catch(error){return String(error);}});
+    expect(assetError).toContain('Cartesia');
+    const voice=await settings.evaluate(()=>window.steady.voiceStatus());
+    expect(voice.snapshot?.state).toBe('MUTED');
+    expect(voice.snapshot?.cloudOn).toBe(false);
     const voiceStatus=await page.evaluate(()=>window.steady.status());
     expect(voiceStatus.microphoneEnabled).toBe(false);
-    expect(voiceStatus.speechDiagnostics).toMatchObject({audioBuffers:0,transcriberResults:0,acceptedUtterances:0});
     const received=page.evaluate(()=>new Promise<boolean>(resolve=>{
       const channel=new BroadcastChannel('steady-review-origin-probe');const timer=setTimeout(()=>{channel.close();resolve(false);},2000);
       channel.onmessage=event=>{clearTimeout(timer);channel.close();resolve(event.data==='probe');};
