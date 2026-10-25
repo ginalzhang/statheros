@@ -16,10 +16,11 @@ export class VoiceCapture {
   async open(): Promise<void> {
     this.close();
     const run = ++this.run;
+    let stream: MediaStream | null = null, context: AudioContext | null = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false });
       if (run !== this.run) { stream.getTracks().forEach(track => track.stop()); return; }
-      const context = new AudioContext({ sampleRate: 16000, latencyHint: 'interactive' });
+      context = new AudioContext({ sampleRate: 16000, latencyHint: 'interactive' });
       await context.audioWorklet.addModule(workletUrl);
       if (run !== this.run) { stream.getTracks().forEach(track => track.stop()); void context.close(); return; }
       const node = new AudioWorkletNode(context, 'steady-voice-tap', { numberOfInputs: 1, numberOfOutputs: 1 });
@@ -31,6 +32,9 @@ export class VoiceCapture {
       this.stream = stream; this.context = context;
       this.opened();
     } catch (error) {
+      // Never leave the OS mic indicator on for a stream we failed to wire up.
+      if (stream && this.stream !== stream) stream.getTracks().forEach(track => track.stop());
+      if (context && this.context !== context) void context.close().catch(() => undefined);
       if (run === this.run) this.failed(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
     }
   }

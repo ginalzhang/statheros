@@ -92,7 +92,8 @@ async function run(name: string, script: Script, tailS = 12, configure?: (config
     openCapture: () => undefined, closeCapture: () => undefined,
     playEarcon: (_name, playId) => clock.setTimer(() => runtime.post({ type: 'PlaybackStopped', playId }), 120),
     stopPlayback: () => undefined,
-    inference: { frame: (pcm, ts) => runtime.inferenceResult(inference.frame(pcm, ts)), setWakeEnabled: enabled => inference.setWakeEnabled(enabled), resetWake: () => inference.resetWake(), reset: () => inference.reset() },
+    // Transfer like ElectronVoice's postMessage: this detaches the argument.
+    inference: { frame: (pcm, ts) => { const moved = structuredClone(pcm, { transfer: [pcm.buffer as ArrayBuffer] }); runtime.inferenceResult(inference.frame(moved, ts)); }, setWakeEnabled: enabled => inference.setWakeEnabled(enabled), resetWake: () => inference.resetWake(), reset: () => inference.reset() },
     changed: snapshot => { if (process.env.VOICE_DEBUG && states.at(-1) !== snapshot.state) console.log(clock.t.toFixed(2), 'STATE', snapshot.state, snapshot.transcript); if (states.at(-1) !== snapshot.state) states.push(snapshot.state); if (snapshot.toast && toasts.at(-1) !== snapshot.toast.message) toasts.push(snapshot.toast.message); },
     log: (level, fields) => { if (process.env.VOICE_DEBUG) console.log(clock.t.toFixed(2), level, JSON.stringify(fields)); },
   };

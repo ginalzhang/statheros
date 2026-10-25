@@ -98,6 +98,24 @@ describe('Forwarder', () => {
     forwarder.gate = false; forwarder.stop(); forwarder.control('close');
     expect(sink.controls).toEqual(['finalize', 'close']);
   });
+  it('pad_then_close still sends the close when the pad is cut short by StopForwarding', () => {
+    const clock = new FakeClock(), ring = new RingBuffer(63), forwarder = new Forwarder(ring, clock), sink = new FakeSink(clock);
+    forwarder.attach(sink); forwarder.gate = true; sink.isOpen = true;
+    forwarder.padZeros(1, () => { forwarder.gate = false; forwarder.stop(); forwarder.control('close'); });
+    clock.advance(0.3);
+    expect(sink.sends.length).toBeGreaterThan(0);
+    forwarder.stop();
+    expect(sink.controls).toEqual(['close']);
+  });
+  it('audio queued before connect gets the 1 s burst once the socket opens (PTT)', () => {
+    const clock = new FakeClock(), ring = new RingBuffer(63), forwarder = new Forwarder(ring, clock), sink = new FakeSink(clock);
+    forwarder.attach(sink); forwarder.gate = true;
+    forwarder.start(null);
+    for (let i = 0; i < 8; i++) { forwarder.push(frame(i * 0.08)); clock.advance(0.08); }
+    sink.isOpen = true;
+    clock.advance(0.025);
+    expect(sink.sends.reduce((n, send) => n + send.bytes, 0)).toBeGreaterThanOrEqual(6 * 3200);
+  });
   it('StartForwarding is idempotent and clamps to the oldest frame', () => {
     const clock = new FakeClock(), ring = new RingBuffer(5), forwarder = new Forwarder(ring, clock), sink = new FakeSink(clock);
     for (let i = 0; i < 10; i++) ring.append(frame(i * 0.08));

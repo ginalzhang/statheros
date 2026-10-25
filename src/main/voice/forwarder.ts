@@ -36,12 +36,13 @@ export class Forwarder {
   onFirstByte: (() => void) | null = null;
   onWrite: ((bytes: number) => void) | null = null;
   private firstByteSent = false;
+  private opened = false;
 
   constructor(private readonly ring: RingBuffer, private readonly clock: PacingClock = realClock) {}
 
   attach(sink: AudioSink): void {
     this.detach();
-    this.sink = sink; this.firstByteSent = false;
+    this.sink = sink; this.firstByteSent = false; this.opened = false;
     this.stopTick = this.clock.every(25, () => this.pump());
   }
   detach(): void {
@@ -63,9 +64,11 @@ export class Forwarder {
   }
   /** Discards queued-but-unsent audio so later control frames go out immediately. */
   stop(): void {
+    const pad = this.padding;
     this.forwarding = false; this.padding = null;
     this.sent = this.queued; this.pending = Buffer.alloc(0); this.burst = 0;
     this.pump();
+    pad?.then(); // pad_then_close: ending the pad early must still send the close
   }
   /** Live frame from the tap (already appended to the ring buffer). */
   push(frame: Frame): void {
@@ -101,6 +104,12 @@ export class Forwarder {
     const sink = this.sink;
     if (!sink || !sink.isOpen) return;
     const now = this.clock.now();
+    if (!this.opened) {
+      // Audio queued while connecting is backlog too: first 1 s back-to-back, then 2×.
+      this.opened = true;
+      this.burst = Math.min(this.pending.length, CHUNK_BYTES * 10);
+      this.lastPaced = now;
+    }
     if (this.padding) {
       const elapsed = now - this.lastPaced;
       const zeros = Math.floor(elapsed / 0.1);

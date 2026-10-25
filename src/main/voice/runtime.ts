@@ -18,6 +18,7 @@ export interface VoiceHost {
   closeCapture(): void;
   playEarcon(name: EarconName, playId: string): void;
   stopPlayback(): void;
+  /** `frame` receives a copy it may transfer to another thread. */
   inference: { frame(pcm: Int16Array, ts: number): void; setWakeEnabled(enabled: boolean): void; resetWake(): void; reset(): void };
   changed(snapshot: VoiceSnapshot): void;
   log(level: 'debug' | 'info' | 'warn', fields: Record<string, unknown>): void;
@@ -123,7 +124,10 @@ export class VoiceRuntime {
         }
         if (next.type === 'SttFinal') this.utterance.finalTs = this.now();
         const actions = this.machine.handle(next, this.ctx, this.now());
-        for (const action of actions) this.execute(action);
+        // One failing action must never strand the rest of the batch (timers, gate) or the queue.
+        for (const action of actions) {
+          try { this.execute(action); } catch (error) { this.host.log('warn', { actionFailed: action.type, error: String(error) }); }
+        }
       }
     } finally { this.draining = false; }
     this.publish();
@@ -143,7 +147,8 @@ export class VoiceRuntime {
       if (zeroFor >= 2 && !this.zeroReported) { this.zeroReported = true; this.post({ type: 'DeviceChanged' }); this.host.closeCapture(); this.host.openCapture(); }
       else if (zeroFor >= 3) { this.zeroSince = null; this.zeroReported = false; this.post({ type: 'CaptureFailed', reason: 'silent input' }); }
     } else { this.zeroSince = null; this.zeroReported = false; }
-    this.host.inference.frame(pcm, ts);
+    // The host may transfer (detach) what it receives; the ring buffer keeps its own copy for the pre-roll.
+    this.host.inference.frame(pcm.slice(), ts);
   }
 
   /** Result from the inference thread: mirror VAD state first, then post its events. */
@@ -242,7 +247,7 @@ export class VoiceRuntime {
     const session = new SttSession(sessionId, kind, this.config, this.options.apiKey, signal => this.signal(sessionId, signal), { factory: this.options.socketFactory, baseUrl: this.options.baseUrl });
     this.session = session; this.sessions.add(session);
     this.forwarder.attach(session);
-    void session.open().finally(() => this.sessions.delete(session));
+    void session.open().catch(error => this.host.log('warn', { openFailed: String(error) })).finally(() => this.sessions.delete(session));
   }
   private signal(sessionId: number, signal: SessionSignal): void {
     if (signal.type === 'Log') return this.host.log('debug', { sessionId, ...signal.fields });
