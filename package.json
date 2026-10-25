@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:native": "npm run build:native && CLANG_MODULE_CACHE_PATH=/private/tmp/steady-native-module-cache SWIFTPM_MODULECACHE_OVERRIDE=/private/tmp/steady-native-module-cache swift test --package-path native --arch arm64 --scratch-path .cache/swift-test-xcode --cache-path .cache/swiftpm --disable-sandbox -Xswiftc -load-plugin-library -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing/libTestingMacros.dylib && python3 native/Tests/integration.py resources/bin/SteadyNative",
     "setup:electron": "install-electron",
+    "setup:signing": "node scripts/setup-signing.mjs",
     "test:e2e": "playwright test",
     "build:native": "node scripts/build-native.mjs",
     "assets": "node scripts/assets.mjs --fetch && node scripts/voice-assets.mjs --fetch",
