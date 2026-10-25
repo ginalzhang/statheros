@@ -167,3 +167,5 @@ html.canvas-window, .canvas-window body, .canvas-window #root { width: 100%; hei
 .canvas-outline span { position: absolute; left: 0; top: 0; padding: 7px 10px; background: #182126; color: #eff8fb; border-radius: 0 0 6px 0; white-space: nowrap; }
 
 .panel-section .settings-actions button, .advanced-canvas button, .canvas-diagnostics button, .canvas-selector-controls button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.segmented button.armed { background: transparent; outline: 2px dashed var(--selected); outline-offset: -3px; font-weight: 500; }
+.pen-gesture h3 { font-size: 14px; margin: 16px 0 4px; }

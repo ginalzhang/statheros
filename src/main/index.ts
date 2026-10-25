@@ -27,6 +27,8 @@ import { ElectronVoice } from './voice/electron-voice';
 import { dispatchVoiceCommand } from './voice/command-dispatch';
 import { anthropicKey, createIntentClient, interpretIntent, type IntentClient } from './voice/intent';
 import { explainRejection } from './rejections';
+import { OUTSIDE_CANVAS_CODES, PenArming } from './pen-arming';
+import { validPenGesture } from '../shared/settings';
 import type { CommandEvent } from './voice/types';
 import type { VoiceCaptureReport } from '../shared/voice';
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -309,6 +311,23 @@ function installBindings(): void {
 }
 
 let status: ProbeStatus = { native: null, displays: [], fault: null, collapsed: false, settingsOpen: false, generation, realInput, microphoneEnabled: false };
+const pen = new PenArming();
+let engagingPen = false;
+/** Fresh tracked pointer inside the confirmed canvas and outside the Steady panel. */
+function pointerInCanvas(): boolean {
+  const position = freshPointer(pointer, generation, performance.now());
+  const bounds = panel?.getBounds();
+  return Boolean(position && canvas && containsPoint(canvas, position) && !(bounds && containsPoint(bounds, position)));
+}
+function penContext() { return { native: supervisor?.state?.state, buttonDown: Boolean(supervisor?.state?.buttonDown), inCanvas: pointerInCanvas() }; }
+function penGestureEnabled(): boolean { return savedSettings.mode === 'palm' && Boolean(savedSettings.penGestures?.find(entry => entry.cameraId === savedSettings.cameraId)?.enabled); }
+function publishPen(message?: string): void { status.penArmed = pen.armed; if (message !== undefined) status.fault = message; publish(); }
+/** Armed pen: press as soon as the tracked pointer is inside the canvas (native rules still apply). */
+function engageArmedPen(): void {
+  if (engagingPen || !pen.shouldEngage(penContext(), performance.now())) return;
+  engagingPen = true;
+  void enqueueAction('penDown').then(ack => pen.attempted(ack !== null, performance.now()), () => pen.attempted(false, performance.now())).finally(() => { engagingPen = false; publishPen(); });
+}
 let buttons: {actionId:LocalActionID;rect:Rect}[] = [];
 let speechSession: string | null = null;
 const speechSeen = new Set<string>();
@@ -443,6 +462,23 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
     await supervisor.request('action', { generation, eventId: randomUUID(), actionId: 'penUp' });
     throw new Error('Generic shortcut profiles are unverified configuration previews. Select the fixed Krita profile to execute.');
   }
+  if (actionId === 'penDown' || actionId === 'penToggle') {
+    const decision = pen.request(actionId === 'penDown' ? 'down' : 'toggle', penContext());
+    if (decision === 'not-tracking') { publishPen(); throw new Error('Resume tracking first, then put the pen down.'); }
+    if (decision === 'disarm') { publishPen('Pen disarmed.'); return null; }
+    publishPen();
+    if (decision === 'press') {
+      try {
+        const ack = await supervisor.request('action', { generation, eventId, actionId: actionId as ActionID });
+        status.fault = null; publish(); return ack;
+      } catch (error) {
+        // Pointer on the panel or outside the canvas: stay armed and press on entering the canvas.
+        if (pen.armed && error instanceof Error && OUTSIDE_CANVAS_CODES.includes(error.message)) { publishPen('Pen armed — it goes down when your hand moves into the canvas.'); return null; }
+        pen.release(); publishPen(); throw error;
+      }
+    }
+  }
+  if (actionId === 'penUp') { pen.release(); status.penArmed = false; }
   const ack = await supervisor.request('action', { generation, eventId, actionId: actionId as ActionID });
   status.fault = null; publish(); return ack;
 }
@@ -626,6 +662,16 @@ function installIPC(): void {
     settingsStore.save(savedSettings);status.settings=savedSettings;status.canvasConfirmed=false;
     invalidateCanvas();await configureControl();status.fault='Camera orientation changed; recalibrate';publish();
   }));
+  handle('save-pen-gesture',(value:unknown)=>configuration.run(async()=>{
+    const remove=isObject(value)&&value.remove===true&&typeof value.cameraId==='string';
+    if(!remove&&!validPenGesture(value))throw new Error('Invalid pen gesture setting');
+    const cameraId=(value as {cameraId:string}).cameraId;
+    await pause('Pen gesture setting changed; Resume when ready.');pen.release();
+    const rest=(savedSettings.penGestures??[]).filter(entry=>entry.cameraId!==cameraId);
+    const penGestures=remove?rest:[...rest,value as import('../shared/settings').PenGestureSetting];
+    savedSettings={...savedSettings,penGestures};if(!penGestures.length)delete savedSettings.penGestures;
+    settingsStore.save(savedSettings);status.settings=savedSettings;publishPen();
+  }));
   handle('panel-opacity',(opacity:unknown)=>{if(opacity!==1&&opacity!==0.7)throw new Error('Invalid opacity');panel?.setOpacity(opacity);status.panelOpacity=opacity;publish();});
   handle('select-display',(displayId:unknown)=>configuration.run(async()=>{
     if(!uint(displayId)||!status.displays.some(display=>display.id===displayId))throw new Error('Unknown native display');
@@ -665,6 +711,18 @@ function installIPC(): void {
     if(event.sender!==panel?.webContents || (canvasSetup.state.mode === 'mouse' && canvasSetup.state.active) || !mappedSampleAllowed(sample,position,{...status,generation},performance.now()))return;
     pointer = sample.valid ? { position: position as Point, timestamp: sample.captureTimestamp, generation } : null;
     if(supervisor?.state?.generation===generation)supervisor.submit(sample, sample.valid ? position as Point : null, sample.captureTimestamp);
+    if(sample.valid&&pen.armed)engageArmedPen();
+  });
+  // Rest/lift gesture (opt-in): rest arms the pen (it presses inside the canvas only); lift releases.
+  ipcMain.on('steady:pen-gesture',(event,state:unknown,gestureGeneration:unknown)=>{
+    trusted(event);
+    if(event.sender!==panel?.webContents||(state!=='rest'&&state!=='lift')||gestureGeneration!==generation||!penGestureEnabled())return;
+    if(state==='lift'){
+      pen.release();publishPen();
+      if(supervisor?.state?.buttonDown)void enqueueAction('penUp').catch(error=>fault(String(error)));
+      return;
+    }
+    void enqueueAction('penDown').catch(()=>publishPen());
   });
   ipcMain.on('steady:voice-frame',(event,pcm:unknown)=>{if(event.sender!==panel?.webContents||event.senderFrame!==event.sender.mainFrame)return;voice?.frame(pcm);});
   ipcMain.on('steady:voice-report',(event,report:unknown)=>{
@@ -691,6 +749,7 @@ async function startNative(): Promise<void> {
         releaseAfterCaptureMs:state.lastValidCaptureTimestamp==null?null:state.lastReleaseTimestamp-state.lastValidCaptureTimestamp,
         buttonDown:state.buttonDown,clockUncertaintyMs:next.clock.uncertainty});
     }
+    if(pen.native(state.state))status.penArmed=false;
     status.native=state;if(state.reason==='microphone-enabled'&&speechSession!==null)status.microphoneEnabled=true;if(state.reason==='microphone-disabled')status.microphoneEnabled=false;if(state.reason==='speech-assets-ready')status.speechDiagnostics={...(status.speechDiagnostics??emptySpeechDiagnostics(speechSession)),assets:'ready'};publish();});
   next.on('fault',(message)=>{if(supervisor!==next)return;invalidateCanvas('Native helper unavailable; recover it and set the canvas again.');speechSession=null;status.microphoneEnabled=false;status.nativeClockReady=false;status.nativeFault=message;trackingEvidence('native-fault',{message});fault(message);});
   next.on('clock-ready',ready=>{if(supervisor!==next)return;status.nativeClockReady=ready;publish();});
