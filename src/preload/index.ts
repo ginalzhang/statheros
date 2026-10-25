@@ -71,6 +71,8 @@ const api: SteadyAPI = Object.freeze({
   recordTrackingMetrics: (metrics: TrackingProbeMetrics): Promise<void> => ipcRenderer.invoke('steady:tracking-metrics', metrics),
   onRecenter: (callback: () => void): (() => void) => { const handler = (): void => callback(); ipcRenderer.on('steady:recenter', handler); return () => { ipcRenderer.removeListener('steady:recenter', handler); }; },
   saveCalibration: (calibration: CalibrationV1): Promise<void> => ipcRenderer.invoke('steady:save-calibration', calibration),
+  tuneCalibration: (calibration: CalibrationV1): Promise<void> => ipcRenderer.invoke('steady:tune-calibration', calibration),
+  setPanelOpacity: (opacity: 1 | 0.7): Promise<void> => ipcRenderer.invoke('steady:panel-opacity', opacity),
   submitMappedProbe: (sample: TrackingSample, position: Point | null): void => { if (clockReady) ipcRenderer.send('steady:mapped-probe', { ...sample, captureTimestamp: sample.captureTimestamp + clockOffset }, position); },
   microphone: (enabled: boolean): Promise<void> => ipcRenderer.invoke('steady:microphone', enabled),
   installSpeechAssets: (): Promise<void> => ipcRenderer.invoke('steady:install-speech-assets'),

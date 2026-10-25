@@ -53,7 +53,7 @@ export class Inference {
       });
       this.stream = this.spotter.createStream();
       try {
-        this.silero = new lib.Vad({ sileroVad: { model: path.join(init.modelDir, 'silero_vad.onnx'), threshold: init.vadThreshold, minSilenceDuration: 0.1, minSpeechDuration: 0.05, windowSize: 512, maxSpeechDuration: 30 }, sampleRate: 16000, numThreads: 1, provider: 'cpu', debug: 0 }, 2);
+        this.silero = new lib.Vad({ sileroVad: { model: path.join(init.modelDir, 'silero_vad.onnx'), threshold: init.vadThreshold, minSilenceDuration: 0.1, minSpeechDuration: 0.05, windowSize: 512, maxSpeechDuration: 30 }, sampleRate: 16000, numThreads: 1, provider: 'cpu', debug: 0 }, 60); // ≥ maxSpeechDuration: no regrowth copies
       } catch (cause) { error = `Silero VAD unavailable; using energy VAD (${String(cause)})`; }
     } catch (cause) { error = `Wake word unavailable; push-to-talk still works (${String(cause)})`; }
     this.error = error;

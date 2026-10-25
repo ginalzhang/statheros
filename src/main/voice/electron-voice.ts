@@ -168,7 +168,9 @@ export class ElectronVoice {
     if (key === null) this.keys.clear(); else this.keys.set(key);
     // Restart the pipeline with the new key (the probe reports a bad key at once).
     const wasOn = this.runtime !== null && this.runtime.ctx.state !== 'MUTED';
-    this.runtime?.shutdown(); void this.worker?.terminate(); this.worker = null; this.outstanding = 0;
+    this.runtime?.shutdown();
+    const old = this.worker; this.worker = null; this.outstanding = 0;
+    if (old) void this.terminate(old);
     this.startRuntime(!wasOn);
   }
   snapshot(): VoiceSnapshot | null {
@@ -199,11 +201,23 @@ export class ElectronVoice {
     return { utterances: list.length, wakeToFirstByte: pick('wakeToFirstByteMs'), speechEndToFinal: pick('speechEndToFinalMs'), finalToDispatch: pick('finalToDispatchMs'), inferenceMeanMs: inference.length ? Number((inference.reduce((a, b) => a + b, 0) / inference.length).toFixed(2)) : null };
   }
   get keySource(): 'env' | 'settings' | null { return this.keys.source; }
-  stop(): void {
+  /** Resolves once the inference thread has exited: the native addon must not be torn down mid-process-exit. */
+  async stop(): Promise<void> {
     globalShortcut.unregister(this.config.ptt.hotkey); globalShortcut.unregister(this.config.ptt.muteHotkey);
     this.runtime?.shutdown(); this.runtime = null;
-    void this.worker?.terminate(); this.worker = null;
+    const worker = this.worker; this.worker = null;
     this.lock.release();
+    if (worker) await this.terminate(worker);
+  }
+  /**
+   * sherpa-onnx aborts the whole process if its thread is killed inside a native call, so the worker
+   * drains its queue and exits on its own; terminate() is only a fallback after 3 s.
+   */
+  private async terminate(worker: Worker): Promise<void> {
+    const exited = new Promise<void>(resolve => worker.once('exit', () => resolve()));
+    worker.postMessage({ type: 'exit' } satisfies InferenceRequest);
+    const timeout = (ms: number) => new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), ms));
+    if (await Promise.race([exited, timeout(3000)]) === 'timeout') await Promise.race([worker.terminate(), timeout(1500)]);
   }
 
   private toPanel(command: VoiceCaptureCommand): void {

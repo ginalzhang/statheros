@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { NativeSupervisor } from './supervisor';
 import { emptySpeechDiagnostics, isSpeechDiagnosticError, SpeechDiagnosticRecorder } from './speech-diagnostics';
 import { LiveProbe } from './live-probe';
-import { panelPosition, preferredDisplay } from './panel';
+import { PANEL_COLLAPSED_HEIGHT, PANEL_HEIGHT, PANEL_WIDTH, panelPosition, preferredDisplay } from './panel';
 import { CanvasCapture, containsPoint, intersects } from './canvas';
 import { GlobalBindingInstaller, defaultBindings, kritaProfile, isLocalAction, hitPanel, resolveBinding, validateBindings, validateProfile } from './commands';
 import { freshPointer, mappedSampleAllowed, readyForControl } from './input-gates';
@@ -191,7 +191,7 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
   status.fault = null; publish(); return ack;
 }
 async function collapsePanel(collapsed: boolean): Promise<void> {
-  status.collapsed = collapsed; panel?.setSize(320, collapsed ? 96 : 560, false); buttons = [];
+  status.collapsed = collapsed; panel?.setSize(PANEL_WIDTH, collapsed ? PANEL_COLLAPSED_HEIGHT : PANEL_HEIGHT, false); buttons = [];
   // Native exclusion geometry changes are serialized and always leave input paused.
   await pause('Panel geometry changed; Resume when ready.');
   if (canvasCapture.active) invalidateCanvas();
@@ -213,7 +213,7 @@ async function executeVoiceCommand(command: CommandEvent): Promise<string | null
 }
 function initialPanelPosition(): {x:number;y:number} {
   const display = screen.getAllDisplays().find(d=>d.internal) ?? screen.getPrimaryDisplay();
-  return { x:display.workArea.x+display.workArea.width-320-16, y:display.workArea.y+16 };
+  return { x:display.workArea.x+display.workArea.width-PANEL_WIDTH-16, y:display.workArea.y+16 };
 }
 function updateDisplays(displays:DisplayInfo[],forcePosition=false):void {
   const previous=status.displays.find(display=>display.id===status.selectedDisplayId);
@@ -298,6 +298,17 @@ function installIPC(): void {
     savedSettings=withCalibration(savedSettings,value);settingsStore.save(savedSettings);trackingEvidence('calibration-saved',value);status.settings=savedSettings;status.canvasConfirmed=false;generation++;
     invalidateCanvas(); await configureControl();publish();
   }));
+  // Stroke/motion tuning: gain and smoothing only. Canvas geometry is unaffected, so no reconfirmation;
+  // a held pen is released first so a mapping change can never extend a stroke.
+  handle('tune-calibration',(value:unknown)=>configuration.run(async()=>{
+    if(!isCalibrationV1(value)||value.cameraId!==savedSettings.cameraId||value.mode!==savedSettings.mode)throw new Error('Calibration does not match selected camera/mode');
+    const current=savedSettings.calibrations.find(c=>c.cameraId===value.cameraId&&c.mode===value.mode);
+    const fixed=(c:typeof value)=>JSON.stringify([c.schemaVersion,c.selectedHand,c.neutral.x,c.neutral.y,c.extents.left,c.extents.right,c.extents.up,c.extents.down,c.jitter.x,c.jitter.y]);
+    if(!current||fixed(current)!==fixed(value))throw new Error('Only smoothing and sensitivity can be tuned from the panel');
+    if(status.native?.buttonDown)await supervisor?.request('action',{generation,eventId:randomUUID(),actionId:'penUp'});
+    savedSettings=withCalibration(savedSettings,value);settingsStore.save(savedSettings);status.settings=savedSettings;publish();
+  }));
+  handle('panel-opacity',(opacity:unknown)=>{if(opacity!==1&&opacity!==0.7)throw new Error('Invalid opacity');panel?.setOpacity(opacity);status.panelOpacity=opacity;publish();});
   handle('select-display',(displayId:unknown)=>configuration.run(async()=>{
     if(!uint(displayId)||!status.displays.some(display=>display.id===displayId))throw new Error('Unknown native display');
     await pause('Selected display changed; canvas invalidated');generation++;status.selectedDisplayId=displayId;buttons=[];status.canvasConfirmed=false;invalidateCanvas();updateDisplays(status.displays,true); await configureControl();
@@ -412,7 +423,7 @@ async function main(): Promise<void> {
     return net.fetch(pathToFileURL(filename).href);
   });
   try { verifyResources();resourcesReady=true; } catch(error) { fault(String(error)); }
-  panel=new BrowserWindow({ ...initialPanelPosition(),width:320,height:560,resizable:false,frame:false,show:false,type:'panel',focusable:false,alwaysOnTop:true,skipTaskbar:true,title:'Steady',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false} });
+  panel=new BrowserWindow({ ...initialPanelPosition(),width:PANEL_WIDTH,height:PANEL_HEIGHT,resizable:false,frame:false,transparent:true,hasShadow:true,show:false,type:'panel',focusable:false,alwaysOnTop:true,skipTaskbar:true,title:'Steady',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false} });
   panel.setAlwaysOnTop(true,'floating'); panel.setVisibleOnAllWorkspaces(true,{visibleOnFullScreen:true}); secureWindow(panel);
   panel.on('close',()=>{if(!quitting)app.quit();});
   let panelGeometryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -452,9 +463,9 @@ async function main(): Promise<void> {
   publish();
 }
 app.on('before-quit',event=>{
-  if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;quitting=true;bindingInstaller.clear();voice?.stop();
+  if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;quitting=true;bindingInstaller.clear();
   stopLiveProbe();
-  void supervisor?.stop().finally(()=>app.quit());if(!supervisor)app.quit();
+  void Promise.allSettled([voice?.stop(),supervisor?.stop()]).finally(()=>app.quit());
 });
 app.on('window-all-closed',()=>{if(!quitting)app.quit();});
 void main().catch(error=>fault(String(error)));

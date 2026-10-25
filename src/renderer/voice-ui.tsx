@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { initialVoiceSnapshot, type VoiceLatencyReport, type VoiceSelfTest, type VoiceSnapshot } from '../shared/voice';
 import { Earcons, VoiceCapture } from './voice-capture';
+import { Icon } from './icons';
 
 /** Subscribes to the main-process voice snapshot (the module never draws; the app renders it). */
 export function useVoice(): { voice: VoiceSnapshot; keySource: 'env' | 'settings' | null } {
@@ -48,15 +49,8 @@ export const voiceLabel = (voice: VoiceSnapshot): string => {
 const listening = (voice: VoiceSnapshot): boolean => ['WAKING', 'LISTENING', 'PTT_ACTIVE'].includes(voice.state);
 const shortcut = (accelerator: string): string => accelerator.replace('CommandOrControl', '⌘').replace('Shift', '⇧').replace('Space', 'Space').replace(/\+/g, '');
 
-export function MicGlyph({ muted }: { muted: boolean }): React.JSX.Element {
-  return <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="9" y="3" width="6" height="11" rx="3" />
-    <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6" />
-    {muted && <path d="M4 4l16 16" />}
-  </svg>;
-}
-
-/** Panel strip: mic button, state, cloud dot, live transcript, toast. Always on top with the panel. */
+/** Panel Voice section (Figma: "Voice Commands" switch) plus the live indicator the voice module needs:
+ * state, red cloud dot while audio leaves the Mac, transcript line (click cancels) and toasts. */
 export function VoiceStrip({ voice }: { voice: VoiceSnapshot }): React.JSX.Element {
   const press = useRef<{ timer: ReturnType<typeof setTimeout>; long: boolean } | null>(null);
   const [toast, setToast] = useState<VoiceSnapshot['toast']>(null);
@@ -72,22 +66,30 @@ export function VoiceStrip({ voice }: { voice: VoiceSnapshot }): React.JSX.Eleme
     if (voice.state === 'FEEDBACK' || voice.state === 'PASSIVE') { const timer = setTimeout(() => setTranscriptVisible(false), 3000); return () => clearTimeout(timer); }
     return undefined;
   }, [voice.transcript, voice.state]);
-  const muted = voice.state === 'MUTED' || voice.state === 'DISABLED';
+  const off = voice.state === 'MUTED' || voice.state === 'DISABLED';
   const down = (): void => { press.current = { long: false, timer: setTimeout(() => { if (press.current) { press.current.long = true; window.steady.voiceButton('longpress'); } }, 600) }; };
   const up = (): void => { const current = press.current; press.current = null; if (!current) return; clearTimeout(current.timer); if (!current.long) window.steady.voiceButton('press'); };
-  return <section className={`voice-strip state-${voice.state.toLowerCase()}`} aria-label="Voice commands">
-    <button className={`mic-button${listening(voice) ? ' live' : ''}${muted ? ' muted' : ''}`} aria-pressed={!muted} aria-label={muted ? 'Turn microphone on' : listening(voice) ? 'Stop listening' : 'Push to talk'}
-      title={`Click: ${muted ? 'turn mic on' : 'push to talk'} (${shortcut(voice.hotkey)}). Right-click or hold: mute (${shortcut(voice.muteHotkey)}).`}
-      onPointerDown={down} onPointerUp={up} onPointerLeave={() => { if (press.current) { clearTimeout(press.current.timer); press.current = null; } }}
-      onContextMenu={event => { event.preventDefault(); window.steady.voiceButton('longpress'); }}>
-      <MicGlyph muted={muted} />
-    </button>
-    <div className="voice-text">
-      <p className="voice-state" role="status">{voiceLabel(voice)}{voice.cloudOn && <span className="cloud-dot" title="Audio is streaming to Cartesia" aria-label="Streaming to Cartesia" />}</p>
-      {transcriptVisible && voice.transcript
-        ? <p className={`voice-transcript${voice.transcriptFinal ? ' final' : ''}`} onClick={() => window.steady.voiceCancel()} title="Click to cancel">{voice.transcript}</p>
-        : <p className="voice-hint">{muted ? 'Nothing is heard until you turn the mic on' : `${shortcut(voice.hotkey)} to talk · right-click to mute`}</p>}
+  return <section className={`panel-section voice-strip state-${voice.state.toLowerCase()}`} aria-labelledby="voice-title">
+    <h2 id="voice-title">Voice</h2>
+    <div className="row"><span id="voice-switch-label">Voice Commands</span>
+      {/* Shows actual activation (capture open), not only the request (handoff §02). */}
+      <button className="switch" role="switch" aria-checked={!off} aria-labelledby="voice-switch-label" disabled={voice.state === 'DISABLED'} onClick={() => void window.steady.microphone(off)}><span /></button>
     </div>
+    {!off && <div className="voice-live">
+      <button className={`mic-button${listening(voice) ? ' live' : ''}`} aria-label={listening(voice) ? 'Stop listening' : 'Push to talk'}
+        title={`Push to talk (${shortcut(voice.hotkey)}). Right-click or hold to mute (${shortcut(voice.muteHotkey)}).`}
+        onPointerDown={down} onPointerUp={up} onPointerLeave={() => { if (press.current) { clearTimeout(press.current.timer); press.current = null; } }}
+        onContextMenu={event => { event.preventDefault(); window.steady.voiceButton('longpress'); }}>
+        <Icon name={listening(voice) ? 'micOn' : 'micOff'} size={18} />
+      </button>
+      <div className="voice-text">
+        <p className="voice-state" role="status">{voiceLabel(voice)}{voice.cloudOn && <span className="cloud-dot" title="Audio is streaming to Cartesia" aria-label="Streaming to Cartesia" />}</p>
+        {transcriptVisible && voice.transcript
+          ? <p className={`voice-transcript${voice.transcriptFinal ? ' final' : ''}`} onClick={() => window.steady.voiceCancel()} title="Click to cancel">{voice.transcript}</p>
+          : <p className="voice-hint">{shortcut(voice.hotkey)} to talk · nothing leaves this Mac until the red dot shows</p>}
+      </div>
+    </div>}
+    {off && <p className="voice-hint">Off. Say commands after turning this on ({shortcut(voice.muteHotkey)}).</p>}
     {toast && <p className={`voice-toast ${toast.level}`} role="alert">{toast.message}</p>}
   </section>;
 }

@@ -7,5 +7,5 @@ it('selects built-in by default and retains an explicitly selected external disp
   expect(preferredDisplay([external,builtIn])?.id).toBe(1);expect(preferredDisplay([external,builtIn],2)?.id).toBe(2);expect(preferredDisplay([builtIn],2)?.id).toBe(1);
 });
 it('positions with16-point margin in negative-origin logical coordinates without Retina multiplication',()=>{
-  expect(panelPosition(external)).toEqual({x:-336,y:-160});expect(panelPosition(builtIn)).toEqual({x:1176,y:41});
+  expect(panelPosition(external)).toEqual({x:-316,y:-160});expect(panelPosition(builtIn)).toEqual({x:1196,y:41});
 });

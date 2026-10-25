@@ -7,7 +7,7 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
   const env=Object.fromEntries(Object.entries(process.env).filter((entry):entry is [string,string]=>entry[1]!==undefined));delete env.ELECTRON_RUN_AS_NODE;
   const app=await _electron.launch({executablePath:path.resolve('out/Steady-darwin-arm64/Steady.app/Contents/MacOS/Steady'),args:[`--user-data-dir=${mkdtempSync(path.join(os.tmpdir(),'steady-phase03-e2e-'))}`,'--test-fake-backend','--use-fake-device-for-media-stream=fps=30','--use-fake-ui-for-media-stream'],env,timeout:15000});
   try{
-    const page=await app.firstWindow();await expect(page.getByText('Steady',{exact:true}).first()).toBeVisible();
+    const page=await app.firstWindow();await expect(page.getByText('Statheros',{exact:true}).first()).toBeVisible();
     // Main-inspector evaluation can pause Electron's monotonic RTT measurement.
     // Wait through native startup via renderer IPC before inspecting the main VM.
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).nativeClockReady),{timeout:5000}).toBe(true);
@@ -16,7 +16,7 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
       const w=BrowserWindow.getAllWindows()[0]!;
       return {packaged:app.isPackaged,size:w.getSize(),focusable:w.isFocusable(),alwaysOnTop:w.isAlwaysOnTop(),allSpaces:w.isVisibleOnAllWorkspaces(),url:w.webContents.getURL()};
     });
-    expect(info).toMatchObject({packaged:true,size:[320,560],focusable:false,alwaysOnTop:true,allSpaces:true});
+    expect(info).toMatchObject({packaged:true,size:[300,660],focusable:false,alwaysOnTop:true,allSpaces:true});
     expect(info.url).toMatch(/^file:/);
     const status=await page.evaluate(()=>window.steady.status());expect(status.realInput).toBe(false);expect(status.fault).toBeNull();expect(status.native?.buttonDown).toBe(false);
     await expect(page.evaluate(()=>window.steady.setRealInput(true))).rejects.toThrow('Real input requires');
@@ -51,7 +51,7 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     // Voice launches microphone-off (plan §2): wake listening needs an explicit mic-on, so no prompt here.
     await expect(settings.getByRole('heading',{name:'Voice commands',exact:true})).toBeVisible();
     await expect(settings.getByRole('button',{name:'Turn microphone on',exact:true})).toBeVisible();
-    await expect(page.getByRole('button',{name:'Turn microphone on',exact:true})).toBeVisible();
+    await expect(page.getByRole('switch',{name:'Voice Commands',exact:true})).toHaveAttribute('aria-checked','false');
     const assetError=await settings.evaluate(async()=>{try{await window.steady.installSpeechAssets();return null;}catch(error){return String(error);}});
     expect(assetError).toContain('Cartesia');
     const voice=await settings.evaluate(()=>window.steady.voiceStatus());

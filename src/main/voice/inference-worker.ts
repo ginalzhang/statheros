@@ -6,7 +6,9 @@ export type InferenceRequest =
   | { type: 'frame'; pcm: Int16Array; ts: number }
   | { type: 'setWakeEnabled'; enabled: boolean }
   | { type: 'resetWake' }
-  | { type: 'reset' };
+  | { type: 'reset' }
+  /** Finish queued work, then let the thread exit naturally (never interrupt a native call). */
+  | { type: 'exit' };
 export type InferenceReply =
   | { type: 'ready'; wake: boolean; vad: 'silero' | 'energy'; error: string | null }
   | ({ type: 'result' } & InferenceResult);
@@ -20,5 +22,6 @@ port.on('message', (message: InferenceRequest) => {
     case 'setWakeEnabled': inference.setWakeEnabled(message.enabled); return;
     case 'resetWake': inference.resetWake(); return;
     case 'reset': inference.reset(); return;
+    case 'exit': port.close(); return;
   }
 });

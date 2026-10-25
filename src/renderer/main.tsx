@@ -6,6 +6,9 @@ import { CameraProbe, type ProbeReport } from './probe';
 import './style.css';
 import { SetupController, type SetupSnapshot } from './setup-controller';
 import { useVoice, useVoiceCapture, VoiceSettings, VoiceStrip } from './voice-ui';
+import { BunnyMark } from './logo';
+import { Icon, type IconName } from './icons';
+import { activePreset, gainFromPercent, sensitivityPercent, STROKE_PRESETS } from './stroke-presets';
 
 const initialStatus: ProbeStatus = { native: null, displays: [], fault: null, collapsed: false, settingsOpen: false, generation: 0, realInput: false, microphoneEnabled: false };
 const initialProbe: ProbeReport = { message: 'Camera off', frames: 0, delegate: null, running: false };
@@ -132,37 +135,111 @@ function App(): React.JSX.Element {
   const feedback = status.nativeFault ?? error ?? status.fault;
   const { voice, keySource } = useVoice();
   if (isSettings) return <Settings status={status} probe={probe} setup={setup} feedback={feedback} run={run} channel={channelRef} voice={<VoiceSettings voice={voice} keySource={keySource} run={run} />} />;
-  return <Panel status={status} probe={probe} setup={setup} feedback={feedback} action={action} previewRef={previewRef} voice={<VoiceStrip voice={voice} />} />;
+  // Stroke/motion modes reuse the calibration's gain and smoothing (no new engine).
+  const tune = (gain: number, smoothing: number): void => { const calibration = setupRef.current?.state.calibration; if (calibration) run(() => window.steady.tuneCalibration({ ...calibration, gain, smoothing })); };
+  return <Panel status={status} probe={probe} setup={setup} feedback={feedback} action={action} previewRef={previewRef} voice={<VoiceStrip voice={voice} />} tune={tune} />;
 }
 
 /** The panel renderer owns camera and microphone capture. */
-function Panel({ status, probe, setup, feedback, action, previewRef, voice }: { status: ProbeStatus; probe: ProbeReport; setup: SetupSnapshot | null; feedback: string | null; action: (id: LocalActionID) => void; previewRef: React.RefObject<HTMLCanvasElement | null>; voice: React.ReactNode }): React.JSX.Element {
+function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune }: { status: ProbeStatus; probe: ProbeReport; setup: SetupSnapshot | null; feedback: string | null; action: (id: LocalActionID) => void; previewRef: React.RefObject<HTMLCanvasElement | null>; voice: React.ReactNode; tune: (gain: number, smoothing: number) => void }): React.JSX.Element {
   useVoiceCapture();
+  const native = status.native?.state;
+  const calibration = setup?.calibration ?? null;
+  const palm = (status.settings?.mode ?? 'head') === 'palm';
+  const penDown = Boolean(status.native?.buttonDown);
+  // Never show a false Active/Connected (handoff §04): status comes from the helper and the live feed.
+  const tracking: [string, string] = !native ? ['Connecting', 'muted'] : native === 'FAULT' ? ['Unavailable', 'bad'] : native === 'PAUSED' ? ['Paused', 'good strong'] : native === 'SETUP' ? ['Setting canvas', 'cyan'] : !probe.running ? ['No camera', 'bad'] : ['Active', 'good'];
+  const paused = !native || native === 'PAUSED' || native === 'FAULT';
+  const preset = activePreset(calibration);
+  const chips = useRef<HTMLDivElement | null>(null);
+  const [scroll, setScroll] = useState({ left: 0, width: 1 });
+  const measure = (): void => { const el = chips.current; if (el) setScroll({ left: el.scrollLeft / Math.max(1, el.scrollWidth - el.clientWidth), width: el.clientWidth / el.scrollWidth }); };
+  useEffect(measure, []);
   return <main className={`panel ${status.collapsed ? 'collapsed' : ''}`}>
     <header className="panel-header">
-      <strong>Steady</strong>
-      <button data-action="pause" onClick={() => action('pause')} aria-label="Pause input">Pause</button>
-      <button data-action="openSettings" onClick={() => action('openSettings')} aria-label="Open settings">⚙</button>
-      <button data-action="togglePanel" onClick={() => action('togglePanel')} aria-label={status.collapsed ? 'Expand panel' : 'Collapse panel'}>{status.collapsed ? '+' : '−'}</button>
-      <button data-action="quit" onClick={() => action('quit')} aria-label="Quit Steady">×</button>
+      <BunnyMark size={22} />
+      <strong>Statheros</strong>
+      {!status.collapsed && <button className="icon" data-action="openSettings" onClick={() => action('openSettings')} aria-label="Open settings" title="Settings"><Icon name="gear" size={18} /></button>}
+      <button className="icon" data-action="togglePanel" onClick={() => action('togglePanel')} aria-label={status.collapsed ? 'Expand panel' : 'Collapse panel'} title={status.collapsed ? 'Expand' : 'Minimize'}><Icon name={status.collapsed ? 'chevronDown' : 'chevronUp'} size={16} /></button>
+      {!status.collapsed && <button className="icon" data-action="quit" onClick={() => action('quit')} aria-label="Quit Steady" title="Quit"><Icon name="close" size={16} /></button>}
     </header>
-    <div className="compact-status" role="status">{status.native?.state ?? 'Connecting'} · {status.realInput ? 'Real input' : 'Fake input'} · Mic {status.microphoneEnabled ? 'on' : 'off'}</div>
-    {voice}
-    <canvas ref={previewRef} width={280} height={140} hidden={status.collapsed} aria-label="Mirrored local camera preview" className="camera-preview" />
-    {!status.collapsed && <div className="panel-content">
-      <section className="health" aria-label="Probe status">
-        <p>{status.native?.reason ?? 'Starting local helper…'}</p>
-        <p>{probe.message} · {probe.frames} frames{probe.delegate ? ` · ${probe.delegate}` : ''}</p>
+    <div className="panel-content" hidden={status.collapsed}>
+      <section className="panel-section" aria-labelledby="tracking-title">
+        <h2 id="tracking-title">Tracking</h2>
+        <div className="row"><span>{palm ? 'Hand Tracking' : 'Head Tracking'}</span><span className={`value ${tracking[1]}`} role="status">{tracking[0]}</span></div>
+        <div className="row"><span>Camera</span><span className={`value ${probe.running ? 'good' : 'muted'}`}>{probe.running ? 'Connected' : 'Off'}</span></div>
+        <div className="row"><span>Canvas</span>
+          {status.canvasSetup?.active
+            ? <span className="row-actions"><button className="link" data-action="markCorner" onClick={() => action('markCorner')}>Mark corner</button><button className="link" data-action="cancelCanvas" onClick={() => action('cancelCanvas')}>Cancel</button></span>
+            : <span className="row-actions"><span className={`value ${status.canvasConfirmed ? 'good' : 'muted'}`}>{status.canvasConfirmed ? 'Set' : 'Not set'}</span><button className="link" data-action="beginCanvas" onClick={() => action('beginCanvas')}>Set canvas</button></span>}
+        </div>
+        {status.canvasSetup?.active && <p className="secondary" role="status">{status.canvasSetup.message}</p>}
+        <button className="link" data-action="openSettings" onClick={() => action('openSettings')}>Recalibrate Tracking</button>
         {feedback && <p role="alert" className="error">{feedback}</p>}
       </section>
-      {setup?.position && <p>Mapped probe: {Math.round(setup.position.x)}, {Math.round(setup.position.y)}</p>}
-      {probe.confirmationRequired && <button data-action="confirmHand" onClick={() => action('confirmHand')}>Confirm selected hand</button>}
-      <p role="status">{status.canvasSetup?.message ?? (status.canvasConfirmed ? 'Canvas confirmed · Resume required' : 'Canvas confirmation required')}</p>
-      <div className="settings-actions"><button data-action="beginCanvas" onClick={() => action('beginCanvas')}>Set canvas</button><button data-action="cancelCanvas" onClick={() => action('cancelCanvas')} disabled={!status.canvasSetup?.active}>Cancel canvas</button></div>
-      <div className="actions">{actionLabels.map(([id, label]) => <button key={id} data-action={id} onClick={() => action(id)}>{label}</button>)}</div>
-      <p className="hint">F8: {status.canvasSetup?.active ? 'mark corner' : 'pen toggle'} · F9: pause<br />Use Fn with function keys if macOS requires it. Confirm calibration and canvas before Resume.</p>
-    </div>}
+      <div className="preview-wrap"><section className="preview-card" aria-label={palm ? 'Hand Preview' : 'Head Preview'}>
+        <h3>{palm ? 'Hand Preview' : 'Head Preview'}</h3>
+        <canvas ref={previewRef} width={268} height={150} aria-label="Mirrored local camera preview" className="camera-preview" />
+        {!probe.running && <p className="preview-empty">{probe.message}</p>}
+        {probe.confirmationRequired && <button className="chip confirm" data-action="confirmHand" onClick={() => action('confirmHand')}>Confirm selected hand</button>}
+        <footer><span className={`dot ${tracking[1].startsWith('good') && !paused ? 'on' : ''}`} />{paused ? 'Tracking Paused' : tracking[0] === 'Active' ? 'Tracking Active' : tracking[0]}<span className="divider" /><span className="muted">{penDown ? 'Pen Down' : 'Pen Up'}</span></footer>
+      </section></div>
+      <section className="panel-section" aria-labelledby="input-title">
+        <h2 id="input-title">Input</h2>
+        <p className="label">Drawing State</p>
+        <div className="segmented" role="group" aria-label="Drawing state">
+          <button data-action="penUp" aria-pressed={!penDown} onClick={() => action('penUp')}>Pen Up</button>
+          <button data-action="penDown" aria-pressed={penDown} onClick={() => action('penDown')}>Pen Down</button>
+        </div>
+      </section>
+      <section className="panel-section" aria-labelledby="stroke-title">
+        <h2 id="stroke-title">Stroke Assistance</h2>
+        <div className="chips" ref={chips} onScroll={measure} role="radiogroup" aria-label="Stroke assistance">
+          {STROKE_PRESETS.map(item => <button key={item.id} role="radio" aria-checked={preset?.id === item.id} className="chip" disabled={!calibration} onClick={() => tune(item.gain ?? calibration!.gain, item.smoothing)}>{item.label}</button>)}
+        </div>
+        <div className="scroll-indicator" aria-hidden="true"><span style={{ width: `${scroll.width * 100}%`, left: `${scroll.left * (1 - scroll.width) * 100}%` }} /></div>
+        <div className="stroke-preview"><svg width="42" height="22" viewBox="0 0 42 22" aria-hidden="true"><path d={(preset ?? STROKE_PRESETS[1]!).preview} /></svg><span>{preset?.label ?? (calibration ? 'Custom' : 'Calibrate to choose a mode')}</span></div>
+      </section>
+      <section className="panel-section" aria-labelledby="motion-title">
+        <h2 id="motion-title">Motion Assistance</h2>
+        <Slider label="Tremor Smoothing" value={calibration?.smoothing ?? 50} disabled={!calibration} onCommit={value => calibration && tune(calibration.gain, value)} />
+        <Slider label="Movement Sensitivity" value={sensitivityPercent(calibration?.gain ?? 1)} disabled={!calibration} onCommit={value => calibration && tune(gainFromPercent(value), calibration.smoothing)} />
+        {!calibration && <p className="secondary">Calibrate in Settings to adjust these.</p>}
+      </section>
+      {voice}
+      <section className="panel-section" aria-labelledby="actions-title">
+        <h2 id="actions-title">Actions</h2>
+        <div className="action-pair">
+          {paused
+            ? <button className="primary" data-action="resume" onClick={() => action('resume')}>Resume Tracking</button>
+            : <button className="primary" data-action="pause" onClick={() => action('pause')} aria-label="Pause input">Pause Tracking</button>}
+          <button className="outline" data-action="recenter" onClick={() => action('recenter')}>Recalibrate</button>
+        </div>
+      </section>
+      <nav className="toolbar" aria-label="Krita commands">
+        {toolbar.map((item, index) => item === '|' ? <span key={index} className="divider" /> : <button key={item[0]} className={`tool${item[0] === 'penToggle' && penDown ? ' selected' : ''}`} data-action={item[0]} onClick={() => action(item[0])} aria-label={item[1]} title={item[1]}><Icon name={item[2]} size={18} /></button>)}
+        <span className="divider" />
+        <button className="tool" disabled title="AI Assist is not available in Steady" aria-label="AI Assist (unavailable)"><Icon name="sparkle" size={18} /></button>
+        <span className={`dot ${tracking[0] === 'Active' && !paused ? 'on' : ''}`} title={tracking[0]} />
+      </nav>
+      <p className="hint">F8 {status.canvasSetup?.active ? 'marks a corner' : 'toggles the pen'} · F9 pauses · {status.realInput ? 'real input' : 'fake input'}</p>
+    </div>
   </main>;
+}
+
+/** Floating-toolbar order (Figma §2): select · pen · eraser | brush · smaller · bigger | undo · redo. */
+const toolbar: ([ActionID, string, IconName] | '|')[] = [['click', 'Click', 'cursor'], ['penToggle', 'Pen toggle', 'penDown'], ['toggleErase', 'Toggle erase', 'eraser'], '|', ['brush', 'Brush', 'brush'], ['smaller', 'Smaller brush', 'smaller'], ['bigger', 'Bigger brush', 'bigger'], '|', ['undo', 'Undo', 'undo'], ['redo', 'Redo', 'redo']];
+
+/** Continuous 0–100 % slider: the percentage follows the thumb; the engine setting is applied on release. */
+function Slider({ label, value, disabled, onCommit }: { label: string; value: number; disabled: boolean; onCommit: (value: number) => void }): React.JSX.Element {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const commit = (): void => { if (draft !== value) onCommit(draft); };
+  return <label className="slider">
+    <span className="slider-label"><span>{label}</span><span className="value cyan">{draft}%</span></span>
+    <input type="range" min={0} max={100} step={1} value={draft} disabled={disabled} aria-valuetext={`${draft}%`} style={{ '--fill': `${draft}%` } as React.CSSProperties}
+      onChange={event => setDraft(Number(event.target.value))} onPointerUp={commit} onKeyUp={commit} onBlur={commit} />
+  </label>;
 }
 
 function Settings({ status, probe, setup, feedback, run, channel, voice }: { status: ProbeStatus; probe: ProbeReport; setup: SetupSnapshot | null; feedback: string | null; run: (work: () => Promise<void>) => void; channel: React.RefObject<BroadcastChannel | null>; voice: React.ReactNode }): React.JSX.Element {
@@ -199,7 +276,7 @@ function Settings({ status, probe, setup, feedback, run, channel, voice }: { sta
   };
   const permissions = status.native?.permissions;
   return <main className="settings">
-    <h1>Steady tracking setup</h1>
+    <header className="settings-title"><BunnyMark size={30} /><h1>Statheros settings</h1></header>
     <p>Opening settings pauses input. Closing settings keeps input paused. Camera capture continues in the companion panel while it is collapsed or unfocused.</p>
     <section aria-labelledby="camera-heading">
       <h2 id="camera-heading">Local camera and tracking</h2>
@@ -236,6 +313,10 @@ function Settings({ status, probe, setup, feedback, run, channel, voice }: { sta
       <pre data-testid="tracking-diagnostics">{JSON.stringify({ cameraId: status.settings?.cameraId, mode: status.settings?.mode, probe, baseline: setup?.baseline, metrics: setup?.metrics }, null, 2)}</pre>
     </section>
     {voice}
+    <section aria-labelledby="appearance-heading">
+      <h2 id="appearance-heading">Appearance</h2>
+      <label className="confirmation"><input type="checkbox" checked={(status.panelOpacity ?? 1) < 1} onChange={event => run(() => window.steady.setPanelOpacity(event.target.checked ? 0.7 : 1))} />Transparent overlay (70% opacity) so Krita shows through. Leave off for a fully opaque, high-contrast panel.</label>
+    </section>
     <section aria-labelledby="native-heading"><h2 id="native-heading">Native status</h2>
       {status.nativeFault && <p role="alert" className="error">Native helper fault: {status.nativeFault}. Recover starts a fresh helper session and remains paused; camera Stop remains available.</p>}
       <p>{status.realInput ? 'Real input enabled for this session' : 'Fake input backend'} · {status.native?.state ?? 'Connecting'} · {status.native?.reason}</p>

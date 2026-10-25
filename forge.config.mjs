@@ -2,7 +2,7 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 import { MakerZIP } from '@electron-forge/maker-zip';
 export default {
   packagerConfig: {
-    name: 'Steady', executableName: 'Steady', appBundleId: 'org.steady.local',
+    name: 'Steady', executableName: 'Steady', appBundleId: 'org.steady.local', icon: 'resources/icon/statheros',
     appVersion: '0.1.0', asar: true, osxSign: { identity: '-', identityValidation: false, preAutoEntitlements: false, continueOnError: false, optionsForFile: () => ({ hardenedRuntime: false }) },
     extraResource: ['resources/bin', 'resources/assets', 'resources/asset-manifest.json', 'resources/voice'],
     extendInfo: {
