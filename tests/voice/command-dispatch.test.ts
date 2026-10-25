@@ -29,8 +29,8 @@ it('local and interpreted Resume retain the shared calibration and canvas prereq
     await nativeAction();
   };
   const interpret = vi.fn(async () => [{ action: 'resume' as const, times: 1 }]);
-  await expect(dispatchVoiceCommand(command('resume'), enqueue, interpret)).rejects.toThrow('Confirm the canvas');
-  await expect(dispatchVoiceCommand(command('keep going', 'ptt'), enqueue, interpret)).rejects.toThrow('Confirm the canvas');
+  await expect(dispatchVoiceCommand(command('resume'), enqueue, interpret)).rejects.toThrow('Set the canvas first');
+  await expect(dispatchVoiceCommand(command('keep going', 'ptt'), enqueue, interpret)).rejects.toThrow('Set the canvas first');
   expect(nativeAction).not.toHaveBeenCalled();
   status.canvas = { x: 0, y: 0, width: 300, height: 200 }; status.canvasConfirmed = true;
   status.settingsOpen = true;
@@ -84,4 +84,15 @@ it('a follow-up transcript runs only what the on-device keyword did not, and ask
   await expect(dispatchVoiceCommand(followUp('undo, get rid of those lines'), enqueue, interpret)).resolves.toBe('Undone ×3');
   expect(interpret).toHaveBeenCalledWith('undo, get rid of those lines');
   expect(effects).toEqual(['undo', 'undo', 'undo', 'undo', 'undo']);
+});
+
+it('open mic: Claude reads what was meant, and speech that is not a request stays silent', async () => {
+  const enqueue = vi.fn(async () => undefined);
+  const claude = vi.fn(async (text: string) => text.includes('rub') ? [{ action: 'eraser' as const, times: 1 }] : []);
+  await expect(dispatchVoiceCommand(command('I want to rub that out', 'open'), enqueue, claude)).resolves.toBe('Eraser');
+  expect(enqueue).toHaveBeenCalledWith('eraser');
+  await expect(dispatchVoiceCommand(command("yeah I'll be there in five", 'open'), enqueue, claude)).resolves.toBe('');
+  // Push-to-talk was a deliberate request, so it still says nothing was heard.
+  await expect(dispatchVoiceCommand(command("yeah I'll be there in five", 'ptt'), enqueue, claude)).rejects.toThrow('No command heard');
+  expect(enqueue).toHaveBeenCalledTimes(1);
 });

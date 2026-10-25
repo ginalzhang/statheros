@@ -14,15 +14,18 @@ const KEYCHAIN_SERVICE = 'org.steady.anthropic';
 const MEANINGS: Record<ActionID, string> = {
   penDown: 'start drawing (press the pen down)', penUp: 'stop drawing (lift the pen)', penToggle: 'toggle the pen up/down',
   click: 'click once at the pointer', undo: 'undo the last stroke or change', redo: 'redo what was undone',
-  brush: 'switch to the brush tool', toggleErase: 'toggle eraser mode on/off', bigger: 'make the brush bigger',
+  brush: 'switch to the brush tool (turns the eraser off)', eraser: 'switch to the eraser (erase mode on; does nothing if already erasing)',
+  toggleErase: 'flip eraser mode on/off (only when the artist asks to toggle)', bigger: 'make the brush bigger',
   smaller: 'make the brush smaller', pause: 'pause head/hand tracking', resume: 'resume head/hand tracking',
   recenter: 'recalibrate the neutral position', markCorner: 'mark a canvas corner', microphoneOff: 'turn the microphone off',
+  swapColors: 'swap the foreground and background colors', tremorFilter: 'toggle the heavy tremor-smoothing stroke mode on/off',
 };
 const SYSTEM = `You turn one short spoken request from an artist drawing in Krita with Steady (hands-free head/hand tracking) into Steady actions.
 Actions:
 ${ACTIONS.map(id => `- ${id}: ${MEANINGS[id]}`).join('\n')}
 Return the steps in the order they should run. "times" is how many times to run a step: 1 unless the artist asks for a repeat ("undo three times", "undo the last two strokes" → undo 2, "a lot bigger" → bigger 3). Only undo, redo, bigger and smaller can repeat, at most ${MAX_REPEAT} times.
-Return no steps when the request is not about drawing, is negated ("don't undo"), or you would have to guess: a wrong action changes the artwork.`;
+The microphone is always on, so the text may be talk to someone else in the room, thinking aloud or background speech.
+Return no steps when the request is not about drawing, is not addressed to Steady, is negated ("don't undo"), or you would have to guess: a wrong action changes the artwork.`;
 const STEP = { type: 'object', properties: { action: { type: 'string', enum: [...ACTIONS] }, times: { type: 'integer' } }, required: ['action', 'times'], additionalProperties: false };
 const SCHEMA = { type: 'object', properties: { steps: { type: 'array', items: STEP } }, required: ['steps'], additionalProperties: false };
 

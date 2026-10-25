@@ -39,3 +39,9 @@ A success toast appears only after the action resolves. Native actions resolve o
 - **"Switch to Eraser".** Krita's `E` is a toggle and Statheros does not read Krita's tool state, so the toast says "Eraser toggled" instead of claiming which tool is active.
 - **Camera auto-start.** The design does not define a startup policy, so capture still starts only when you pick a source (or press Connect).
 - **Minimized panel.** It keeps the bunny, title and chevron, plus Pause/Play, so pausing stays one click away while collapsed (F9 also works).
+
+## Drawing and voice integration
+
+The compact panel also shows the “Before you draw” prerequisite checklist and armed Pen Down feedback. Armed input waits until the pointer enters the canvas outside both floating windows. A stroke that moves more than 15 logical points can be lifted by holding within 7.5 points for 1.2 seconds; the former rest/lift controls remain retired. Resume can confirm the matching selected hand without another pause.
+
+Set canvas performs fresh detection, workspace review, or timed mouse-selection fallback. Matching remembered bounds can restore after restart or helper recovery, always paused; explicit setup cancellation suppresses restoration. Voice Commands starts off. When enabled, local command words run on-device and other utterances use Cartesia without a wake phrase. Eraser requests are idempotent relative to shortcuts Steady sent; external changes in Krita are not observable.

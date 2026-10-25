@@ -9,6 +9,7 @@ const REPEAT_GAP_MS = 60;
 /**
  * Resolve the spoken plan ("undo three times, then brush"), then run each step through the app dispatcher so its
  * canvas and input gates remain authoritative. Stops at the first rejected step and never retries it.
+ * Returns '' (shown as nothing) when an open-mic utterance was not a request.
  */
 export async function dispatchVoiceCommand(
   command: CommandEvent,
@@ -26,6 +27,8 @@ export async function dispatchVoiceCommand(
     if (!rest?.length) return describePlan([{ action: ran, times: 1 }]);
     steps = rest;
   }
+  // Open mic hears everything said near it; an utterance that isn't a request is ignored silently.
+  if (!steps.length && command.source === 'open') return '';
   if (!steps.length) throw new Error(`No command heard in “${command.text.slice(0, 40)}”`);
   const done: PlanStep[] = [];
   for (const step of steps) {

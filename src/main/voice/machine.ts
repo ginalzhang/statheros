@@ -46,7 +46,7 @@ class Step {
     switch (ev.type) {
       case 'WakeDetected': this.wakeDetected(ev.phrase, ev.ts); break;
       case 'LocalCommand': this.localCommand(ev.text, ev.ts); break;
-      case 'VadSpeechStart': this.vadStart(); break;
+      case 'VadSpeechStart': this.vadStart(ev.ts); break;
       case 'VadSpeechEnd': this.vadEnd(ev.ts, ev.speechMs); break;
       case 'HotkeyDown': this.hotkeyDown(ev.ts); break;
       case 'HotkeyUp': this.hotkeyUp(ev.ts); break;
@@ -130,9 +130,10 @@ class Step {
       this.setTimer('error_clear', this.c.timers.errorClearS);
     }
   }
+  private quietTurn(): boolean { return this.ctx.followUp !== null || this.ctx.source === 'open'; }
   private error(message: string): void {
-    // The keyword's action already ran; a failed follow-up listen is not worth an error.
-    if (this.ctx.followUp !== null && message !== KEY_REJECTED) { this.log('info', { followUp: 'dropped', reason: message }); return this.enter('PASSIVE'); }
+    // The keyword's action already ran, or nobody asked for this listen (open mic): a failure is not worth an error.
+    if (this.sessionOpen() && this.quietTurn() && message !== KEY_REJECTED) { this.log('info', { followUp: 'dropped', reason: message }); return this.enter('PASSIVE'); }
     this.enter('ERROR', message);
   }
 
@@ -158,7 +159,7 @@ class Step {
     this.ctx.closeSent = true;
   }
   private gateOff(): void { this.markCloudHeard(); this.emit({ type: 'SetCloudGate', on: false }); this.emit({ type: 'StopForwarding' }); }
-  private markCloudHeard(): void { if (this.ctx.followUp !== null) this.ctx.cloudHeardUntil = this.now; }
+  private markCloudHeard(): void { if (this.quietTurn()) this.ctx.cloudHeardUntil = this.now; }
 
   // ───────────────────────── abort path (§4.5) ─────────────────────────
   /** Returns whether an AbortCommand was actually issued. Never changes state. */
@@ -223,9 +224,9 @@ class Step {
     if (result.kind === 'drop') return this.dropped(result.reason);
     if (confidence === 'low') {
       const mode = this.c.dispatchLowConfidence;
-      const dispatch = mode === 'always' || (mode === 'ptt_only' && ctx.source === 'ptt') || ctx.followUp !== null;
+      const dispatch = mode === 'always' || (mode === 'ptt_only' && ctx.source === 'ptt') || this.quietTurn();
       if (!dispatch) {
-        this.toast(`Heard '${result.text}' — try again with '${this.c.wake.phrase}'`);
+        this.toast(`Heard '${result.text}' — say that again`);
         if (!ctx.closeSent) this.sendClose();
         return this.enter('PASSIVE');
       }
@@ -350,8 +351,10 @@ class Step {
   }
 
   // ───────────────────────── VAD ─────────────────────────
-  private vadStart(): void {
+  private vadStart(ts: number): void {
     const ctx = this.ctx;
+    ctx.speechStartTs = ts;
+    ctx.openFromTs = Math.max(ts - this.c.wake.openPrerollMs / 1000, ctx.lastVadEndTs ?? -Infinity);
     if (ctx.state === 'LISTENING') for (const name of ['no_speech', 'stt_final', 'manual_end', 'eager_commit'] as const) this.cancelTimer(name);
     else if (ctx.state === 'PTT_ACTIVE') {
       this.cancelTimer('ptt_no_speech');
@@ -386,7 +389,26 @@ class Step {
         return;
       }
       this.setTimer('ptt_auto_end', this.c.ptt.autoEndSilenceMs / 1000);
-    }
+    } else if (ctx.state === 'PASSIVE' || ctx.state === 'FEEDBACK' || ctx.state === 'ERROR') this.openMicTurn(speechMs);
+  }
+
+  /**
+   * Open mic: an utterance that ended without a command word is sent to Cartesia, then read locally or by Claude.
+   * Its audio is replayed from the ring buffer starting at the segment, so earlier speech is never transcribed again.
+   */
+  private openMicTurn(speechMs: number): void {
+    const ctx = this.ctx, start = ctx.speechStartTs;
+    if (!this.c.wake.openMic || ctx.sttDisabled || start === null) return;
+    if (speechMs < this.c.wake.openMinSpeechMs) return this.log('debug', { openMic: 'too short' });
+    if (start <= ctx.wakeGatedUntil || start < ctx.deviceSwapUntil) return this.log('info', { openMic: 'gated' });
+    // A command word in this utterance already ran on-device; the utterance stays local.
+    if (ctx.lastLocalCommand && ctx.lastLocalCommand.ts >= start) return this.log('debug', { openMic: 'command word ran' });
+    ctx.source = 'open'; ctx.detectionTs = null;
+    this.enter('WAKING');
+    this.openStt(this.c.stt.wakeEndpoint);
+    this.setTimer('watchdog', this.c.timers.watchdogS);
+    this.setTimer('connect', connectBackstopSeconds(this.c));
+    this.log('info', { openMic: 'listening' });
   }
 
   // ───────────────────────── hotkey / button (§5.1, §8) ─────────────────────────
@@ -520,8 +542,8 @@ class Step {
       this.enter('LISTENING');
       this.emit({ type: 'SetCloudGate', on: true });
       // A follow-up's pre-roll never re-sends audio an earlier follow-up already transcribed (it would count twice).
-      const preroll = ctx.detectionTs === null ? null : ctx.detectionTs - this.c.wake.prerollMs / 1000;
-      this.emit({ type: 'StartForwarding', fromTs: preroll !== null && ctx.followUp !== null ? Math.max(preroll, ctx.cloudHeardUntil) : preroll });
+      const preroll = ctx.source === 'open' ? ctx.openFromTs : ctx.detectionTs === null ? null : ctx.detectionTs - this.c.wake.prerollMs / 1000;
+      this.emit({ type: 'StartForwarding', fromTs: preroll !== null && this.quietTurn() ? Math.max(preroll, ctx.cloudHeardUntil) : preroll });
       this.setTimer('max_utterance', this.c.timers.maxUtteranceS);
       if (!ctx.vadActive) this.setTimer('no_speech', this.c.timers.noSpeechS);
     } else if (ctx.state === 'PTT_ACTIVE') {
@@ -673,6 +695,7 @@ class Step {
     if (cmdId !== ctx.inFlightCmd) return this.log('debug', { command: 'unmatched', cmdId, ok });
     ctx.inFlightCmd = null; this.cancelTimer('command');
     const message = (text ?? '').slice(0, 80);
+    if (ok && text === '') return ctx.state === 'EXECUTING' ? this.enter('PASSIVE') : undefined; // heard, but not a request
     if (ctx.state === 'EXECUTING') {
       if (!ok) return this.error(message || "That didn't work");
       this.enter('FEEDBACK');

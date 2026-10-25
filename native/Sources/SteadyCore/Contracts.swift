@@ -34,7 +34,7 @@ public struct CalibrationV1: Codable, Sendable {
  public var schemaVersion: Int; public var cameraId: String; public var mode: String; public var selectedHand: String?; public var neutral: Point; public var extents: Extents; public var jitter: Point; public var gain: Double; public var smoothing: Double
 }
 public struct Command: Codable, Sendable { public var eventId: String; public var source: String; public var actionId: ActionID; public var generation: UInt64 }
-public enum ActionID: String, Codable, CaseIterable, Sendable { case penDown, penUp, penToggle, click, undo, redo, brush, toggleErase, bigger, smaller, pause, resume, recenter, markCorner, microphoneOff }
+public enum ActionID: String, Codable, CaseIterable, Sendable { case penDown, penUp, penToggle, click, undo, redo, brush, toggleErase, bigger, smaller, swapColors, pause, resume, recenter, markCorner, microphoneOff }
 public enum JSONValue: Codable, Sendable, Equatable {
  case object([String:JSONValue]), array([JSONValue]), string(String), number(Double), bool(Bool), null
  public init(from decoder: any Decoder) throws {

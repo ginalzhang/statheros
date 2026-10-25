@@ -9,9 +9,9 @@ const state:NativeState={state:'PAUSED',reason:'test',buttonDown:false,foregroun
 beforeEach(()=>{
   vi.useRealTimers();fake.release.mockReset();fake.hold.clear();fake.held=[];fake.spawnCalls=[];fake.beforeAck=null;fake.transform=null;let replySeq=0;
   const child=new EventEmitter() as any;child.stdout=new EventEmitter();child.stderr=new EventEmitter();
-  child.stdin={end:vi.fn(),write:vi.fn((line:string,callback:()=>void)=>{
+  child.stdin=Object.assign(new EventEmitter(),{destroy:vi.fn(),end:vi.fn(),write:vi.fn((line:string,callback:()=>void)=>{
     const request=JSON.parse(line);queueMicrotask(()=>{const acknowledge=()=>{fake.beforeAck?.(request);const payload={requestSeq:request.seq,accepted:true,code:'ok',state,nativeTimestamp:performance.now(),...(request.type==='hello'?{protocolVersion:1,displays:[],capabilities:['fake-input'],targetPid:123}:{})};child.stdout.emit('data',Buffer.from(JSON.stringify({v:1,session:request.session,seq:++replySeq,type:'ack',payload:fake.transform?.(request,payload)??payload})+'\n'));};if(fake.hold.has(request.type))fake.held.push(acknowledge);else acknowledge();callback?.();});return true;
-  })};fake.child=child;
+  })});fake.child=child;
 });
 describe('native supervision',()=>{
   it('performs hello and eight clock probes, accepts state, releases on EOF',async()=>{
@@ -131,4 +131,27 @@ it('reports timing only as a posted update when native acknowledges a movement p
   submit(1);await new Promise(resolve=>setImmediate(resolve));expect(timings[0]).toMatchObject({frameId:1,posted:false,state:'PAUSED'});
   fake.transform=(request,payload)=>request.type==='sample'?{...payload,code:'move-posted',state:{...state,state:'HOVER'}}:payload;
   submit(2);await new Promise(resolve=>setImmediate(resolve));expect(timings[1]).toMatchObject({frameId:2,posted:true,state:'HOVER'});expect(timings[1].nativeActionTimestamp).toEqual(expect.any(Number));await supervisor.stop();
+});
+
+it('handles EPIPE from both the write callback and stream error exactly once', async () => {
+  const supervisor = new NativeSupervisor('/fake/helper', false); await supervisor.start();
+  const faults: string[] = []; supervisor.on('fault', value => faults.push(value));
+  const error = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+  fake.child.stdin.write.mockImplementation((_line: string, callback: (error: Error) => void) => {
+    queueMicrotask(() => { callback(error); fake.child.stdin.emit('error', error); }); return false;
+  });
+  await expect(supervisor.request('ping', { senderTimestamp: performance.now() })).rejects.toThrow('EPIPE');
+  expect(faults).toHaveLength(1); expect(fake.release).toHaveBeenCalled();
+  await expect(supervisor.request('ping', { senderTimestamp: performance.now() })).rejects.toThrow('unavailable');
+  await supervisor.stop();
+  expect(() => fake.child.stdin.emit('error', error)).not.toThrow();
+});
+it('rejects a synchronous pipe write failure and a pipe already closed before write', async () => {
+  const supervisor = new NativeSupervisor('/fake/helper', false); await supervisor.start();
+  fake.child.stdin.writableEnded = true;
+  await expect(supervisor.request('ping', { senderTimestamp: performance.now() })).rejects.toThrow('unavailable');
+  fake.child.stdin.writableEnded = false;
+  fake.child.stdin.write.mockImplementation(() => { throw new Error('write EPIPE'); });
+  await expect(supervisor.request('ping', { senderTimestamp: performance.now() })).rejects.toThrow('EPIPE');
+  await supervisor.stop();
 });

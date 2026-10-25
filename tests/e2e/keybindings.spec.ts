@@ -1,5 +1,6 @@
 import { test, expect, _electron } from '@playwright/test';
 import path from 'node:path';
+import { panelWindow } from './helpers';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 
@@ -8,7 +9,7 @@ test('editable shortcut drafts survive live status updates and bindings persist 
   const env=Object.fromEntries(Object.entries(process.env).filter((entry):entry is [string,string]=>entry[1]!==undefined));delete env.ELECTRON_RUN_AS_NODE;
   const app=await _electron.launch({executablePath:path.resolve('out/Steady-darwin-arm64/Steady.app/Contents/MacOS/Steady'),args:[`--user-data-dir=${mkdtempSync(path.join(os.tmpdir(),'steady-keybindings-e2e-'))}`,'--test-fake-backend'],env,timeout:15000});
   try{
-    const panel=await app.firstWindow();
+    const panel=await panelWindow(app);
     await expect.poll(()=>panel.evaluate(async()=>(await window.steady.status()).nativeClockReady)).toBe(true);
     const nextWindow=app.waitForEvent('window');await panel.evaluate(()=>window.steady.openAdvanced());const settings=await nextWindow;await settings.waitForLoadState();
     const binding=settings.getByRole('textbox',{name:'Binding resume',exact:true});

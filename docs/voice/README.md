@@ -1,12 +1,14 @@
-# Voice input: local command words, "Hey Cartesia" and push-to-talk
+# Voice input: local command words, open mic and push-to-talk
 
-Built from [the implementation prompt](CARTESIA_VOICE_INPUT_PROMPT.md); stack findings are in [DISCOVERY.md](DISCOVERY.md) and measurements in [REPORT.md](REPORT.md).
+Built from [the implementation prompt](CARTESIA_VOICE_INPUT_PROMPT.md); stack findings are in [DISCOVERY.md](DISCOVERY.md) and measurements in [REPORT.md](REPORT.md). The original "hey cartesia" wake phrase has been removed: open mic replaces it.
 
-- **Wake word (local).** sherpa-onnx keyword spotting (`sherpa-onnx-kws-zipformer-gigaspeech-3.3M`, int8) plus Silero VAD, running on a worker thread in the main process. Nothing leaves the Mac until the **red cloud dot** appears.
-- **Speech to text (cloud).** Cartesia Ink (`ink-2`) over a raw WebSocket in the main process, one socket per utterance. Wake mode uses the Auto (turns) endpoint and push-to-talk uses the Manual endpoint.
-- **Commands (local, no wake phrase).** The same keyword spotter also listens for every Steady command ("undo", "redo", "brush", "eraser"/"erase", "pen down", "bigger", "pause"…; see `resources/voice/keywords_raw.txt`). With the mic on, a spotted command runs immediately, even mid-sentence ("switch to the brush"). Eraser is a toggle.
-- **Counts and follow-ons.** Right after a spotted command runs, that utterance is streamed to Cartesia from the pre-roll (the red cloud dot shows), so "undo … three times" runs two more undos once the transcript arrives. No earcon plays, and a failed connection is dropped quietly because the command already ran. Set `wake.localFollowUp: false` in `src/main/voice/config.ts` to keep spotted commands fully on-device.
-- **Meaning (Claude).** Every transcript (wake, push-to-talk, follow-up) becomes an ordered plan of actions with repeat counts (`src/main/voice/plan.ts`). Plain phrasings are parsed locally and run at once: "undo 3 times", "undo undo undo", "undo the last two strokes", "undo twice then switch to the brush". Anything else ("get rid of the last few lines", "don't undo") goes to Claude (`claude-haiku-5-5`, `src/main/voice/intent.ts`), constrained to Steady's actions. Without an Anthropic key the local parse runs, unless it heard a negation. Only undo, redo, bigger and smaller repeat, at most 20 times, about 60 ms apart.
+- **Command words (local).** sherpa-onnx keyword spotting (`sherpa-onnx-kws-zipformer-gigaspeech-3.3M`, int8) plus Silero VAD, running on a worker thread in the main process, listens for every Steady command ("undo", "redo", "brush", "eraser"/"erase", "toggle erase", "pen down", "bigger", "swap colors", "tremor filter", "pause"…; see `resources/voice/keywords_raw.txt`). With the mic on, a spotted command runs immediately, even mid-sentence ("switch to the brush"), and that utterance stays on the Mac.
+- **Open mic (cloud).** With the mic on, an utterance that ends without a command word ("get rid of that last line") is streamed to Cartesia Ink (`ink-2`, Auto endpoint) from the start of that utterance, never earlier, so a previous command word is never transcribed twice. The **red cloud dot** shows while audio is sent. There is no earcon, and a failed connection is dropped quietly. Speech under 250 ms is ignored. Set `wake.openMic: false` in `src/main/voice/config.ts` to keep everything on-device again.
+- **Push-to-talk (cloud).** ⌘⇧Space sends one utterance to Cartesia's Manual endpoint.
+- **Meaning (Claude).** Every transcript becomes an ordered plan of actions with repeat counts (`src/main/voice/plan.ts`). Plain phrasings are parsed locally and run at once: "undo 3 times", "undo twice then switch to the brush". Anything else ("I want to rub that out", "don't undo") goes to Claude (`claude-haiku-5-5`, `src/main/voice/intent.ts`), constrained to Steady's actions. An open-mic utterance that is not a request (talk to someone in the room) is ignored silently. Without an Anthropic key the local parse runs, unless it heard a negation. Only undo, redo, bigger and smaller repeat, at most 20 times, about 60 ms apart.
+- **Eraser.** "Eraser"/"erase" switches erase mode on and does nothing if it is already on. "Brush" switches back to painting (it also turns erase mode off). "Toggle erase" flips it. Krita does not report erase mode, so Steady tracks what it last sent. If you change it in Krita directly, say "toggle erase" once to get back in step.
+- **Other words.** "Swap colors" presses Krita's X (foreground/background). "Tremor filter" is a toggle on Steady's own pointer smoothing, not Krita's stabilizer: it switches to the Tremor Filter stroke mode and back to the previous smoothing, keeping sensitivity, and needs a calibration.
+- **Counts after command words (off).** `wake.localFollowUp: true` also streams utterances that contained a command word, so "undo … three times" runs two more. It is off by default, so a command word runs once.
 
 ## Setup
 
@@ -17,14 +19,14 @@ export CARTESIA_API_KEY=sk_car_...   # or paste it into Settings › Voice (stor
 npm run dev
 ```
 
-Steady launches **microphone-off**. Enable Voice Commands or click the mic button on the panel (or press ⌘⇧M) to listen locally for command keywords and "hey cartesia". Local command words can execute mid-sentence; mute when you do not want voice control. Without a Cartesia key, local commands still work but cloud transcription is unavailable.
+Steady launches **microphone-off**. Enable Voice Commands or click the mic button on the panel (or press ⌘⇧M) to start listening. Command words can execute mid-sentence, and everything else said near the mic is sent to Cartesia (and to Claude when it isn't a plain command), so mute when you do not want voice control. Without a Cartesia key, command words still work but open mic and push-to-talk are unavailable.
 
-When a wake/push-to-talk transcript contains no vocabulary command, optional Claude interpretation maps the text to one fixed Steady action. Configure `ANTHROPIC_API_KEY` or Keychain service `org.steady.anthropic`, account `steady`. Only the transcript is sent to Claude; local command words never call it. Without that key, or on interpretation failure, Steady reports that no command was heard.
+Configure `ANTHROPIC_API_KEY` or Keychain service `org.steady.anthropic`, account `steady`, for Claude. Only the transcript is sent to Claude; command words spotted on-device never call it.
 
 | Input | Action |
 |---|---|
-| "hey cartesia, pen down" | wake + command in one breath |
-| "hey cartesia" … pause … "undo" | also works (the text-less pause rule) |
+| "pen down", "switch to the brush" | runs on-device at once |
+| "I want to rub that out" | open mic → Cartesia → Claude → eraser |
 | **⌘⇧Space** | push-to-talk toggle: press, speak, then press again or just stop talking |
 | Mic button click | turn the mic on; then push-to-talk; mid-utterance it cancels |
 | Mic button right-click / long-press, **⌘⇧M** | mute: the OS mic indicator turns off |
@@ -33,13 +35,11 @@ When a wake/push-to-talk transcript contains no vocabulary command, optional Cla
 
 Electron's `globalShortcut` fires on key-down only, so there is no hold-to-talk: the hotkey toggles. ⌘⇧Space can conflict with input-source switching on some setups, so check the toast at launch. macOS Secure Input (a focused password field) swallows global keys; the panel button still works. Because the panel never takes focus, Esc cannot cancel; use the transcript click or the hotkey. Voice "cancel" cannot press a Cancel button in Krita. Steady commands are atomic native actions with no abort hook, so "stop" during a command says "Can't stop that one".
 
+Only one app should listen at a time: another voice-controlled Krita helper running alongside Steady will act on the same words (two "eraser" toggles cancel out).
+
 ## Changing command words or sensitivity
 
-Edit `resources/voice/keywords_raw.txt` (`TEXT @LABEL :boost #threshold`; the label is the command phrase in capitals with `_` for spaces, and must be in `src/main/voice/steady-commands.ts`). Add respellings for words the spotter misses (as with `ERACE`), raise `#threshold` if it fires by accident, then regenerate `keywords.txt` with the command below.
-
-## Changing the wake phrase
-
-Edit `wake.phrase` in `src/main/voice/config.ts` and the respellings in `resources/voice/keywords_raw.txt`, then regenerate the BPE keyword file (never hand-write the pieces):
+Edit `resources/voice/keywords_raw.txt` (`TEXT @LABEL :boost #threshold`; the label is the command phrase in capitals with `_` for spaces, and must be in `src/main/voice/steady-commands.ts`). Add respellings for words the spotter misses (as with `ERACE`), raise `#threshold` if it fires by accident, then regenerate the BPE keyword file (never hand-write the pieces):
 
 ```sh
 python3 -m venv .cache/spvenv && .cache/spvenv/bin/pip install sentencepiece
@@ -53,22 +53,21 @@ npm test                         # unit + integration (tests/voice/*); integrati
 node scripts/voice-fixtures.mjs  # regenerate the synthetic WAV fixtures (macOS `say`)
 ```
 
-Integration tests run the real tap → Silero/sherpa pipeline on WAV fixtures faster than real time, against a local fake Cartesia WebSocket server. Required fixtures: one breath, pause, silence, double wake, and 401 on connect.
+Integration tests run the real tap → Silero/sherpa pipeline on WAV fixtures faster than real time, against a local fake Cartesia WebSocket server: a command word inside a sentence, plain conversation (open mic), the old wake phrase, silence, and 401 on connect.
 
 ## `voice selftest` and `voice debug latency`
 
-Both are buttons in **Settings › Voice**. The self-test checks 16000 ± 1 % samples/s from the real device and the peak dBFS, and warns below −45 dBFS. The latency report gives the session median and max for wake → first audio byte, speech end → Final, and Final → dispatch. Logs go to `~/Library/Application Support/Steady/voice.log`; set `STEADY_VOICE_DEBUG=1` for debug lines. Transcripts are never logged.
+Both are buttons in **Settings › Voice**. The self-test checks 16000 ± 1 % samples/s from the real device and the peak dBFS, and warns below −45 dBFS. The latency report gives the session median and max for speech end → Final and Final → dispatch. Logs go to `~/Library/Application Support/Steady/voice.log`; set `STEADY_VOICE_DEBUG=1` for debug lines. Transcripts are never logged.
 
 ## Live smoke test (real key, before every demo)
 
-1. "hey cartesia, pen down" in one breath → the pen goes down and the transcript shows "pen down".
-2. "hey cartesia", wait 2 s, "undo" → undo runs.
-3. "hey cartesia", stay silent → the indicator dims within about 8 s, nothing is dispatched, and the log shows `no_speech`.
-4. ⌘⇧Space, "bigger", then stop talking → runs after about 1 s of silence. ⌘⇧Space and say nothing → "Didn't catch that" after 8 s.
-5. Press ⌘⇧Space twice, 10 times in a row (each start plays the wake earcon) → 0 wake detections in the log.
-6. "hey cartesia", then "cancel" → cancel earcon, nothing dispatched.
-7. "hey cartesia, stop" with nothing running → dispatched as a command and rejected as "not a Steady command".
-8. ⌘⇧M → the OS mic dot disappears and the wake word does nothing; ⌘⇧M again restores it.
+1. "Pen down" → the pen goes down at once; the red dot does not show.
+2. "Eraser" → erase mode on. "Eraser" again → stays on. "Brush" → painting again.
+3. "I want to rub that out" → the red dot shows, then the eraser comes on (needs the Anthropic key).
+4. Talk about something else for a few seconds → the red dot shows, then nothing happens and no toast appears.
+5. ⌘⇧Space, "bigger", then stop talking → runs after about 1 s of silence. ⌘⇧Space and say nothing → "Didn't catch that" after 8 s.
+6. "Swap colors" → Krita's foreground and background colors swap.
+7. ⌘⇧M → the OS mic dot disappears and nothing is heard; ⌘⇧M again restores it.
 
 ## Permissions
 

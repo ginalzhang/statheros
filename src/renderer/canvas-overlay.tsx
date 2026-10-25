@@ -127,7 +127,7 @@ export function CanvasOverlay(): React.JSX.Element {
       <div className="canvas-selector-instructions">
         {reviewingWorkspace
           ? <p>Input is paused. Inspect the highlighted workspace or drag to replace it. It may include tabs, rulers, scrollbars, or the bottom info bar.</p>
-          : <p>Input is paused. Drag a rectangle over the document or drawing viewport.</p>}
+          : <p role="status">{setup?.message ?? 'Input is paused. Drag a rectangle over the document or drawing viewport.'}</p>}
         {reviewingWorkspace && setup?.initialSelectionAdjusted && <p>The suggestion was reduced to keep the Steady panel outside it. Drag to adjust it.</p>}
         <p>Use at least 100 × 100 points and keep the Steady panel outside the rectangle.</p>
         {draft && <p role="status">{Math.round(draft.width)} × {Math.round(draft.height)} points</p>}

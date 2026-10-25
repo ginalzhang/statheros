@@ -9,8 +9,9 @@ import { emptySpeechDiagnostics, isSpeechDiagnosticError, SpeechDiagnosticRecord
 import { LiveProbe } from './live-probe';
 import { PANEL_COLLAPSED_HEIGHT, PANEL_HEIGHT, PANEL_WIDTH, SETTINGS_HEIGHT, SETTINGS_WIDTH, TOAST_HEIGHT, TOAST_WIDTH, UTILITY_SIZE, canvasSelectionControlsFrame, panelPosition, preferredDisplay, sameCanvasSelectionDisplay, previewClearOf, settingsFrame, toastPosition, utilityPosition, type UtilityView } from './panel';
 import { CanvasCapture, containsPoint, fitWorkspaceSuggestion, intersects, validateCanvas } from './canvas';
-import { CanvasSetup, canvasIdentity, freshCanvasObservation, freshWorkspaceSuggestion, routeCanvasObservation, sameCanvasRect } from './canvas-setup';
+import { CanvasSetup, canvasIdentity, freshCanvasObservation, freshWorkspaceSuggestion, rememberedCanvasMatches, routeCanvasObservation, sameCanvasRect } from './canvas-setup';
 import { CanvasDiagnostics } from './canvas-diagnostics';
+import { CanvasSetRequest } from './canvas-set-request';
 import { GlobalBindingInstaller, defaultBindings, kritaProfile, isLocalAction, hitSurfaces, resolveBinding, validateBindings, validateProfile } from './commands';
 import { freshPointer, mappedSampleAllowed, readyForControl } from './input-gates';
 import { resourcesRoot, verifyResources } from './resources';
@@ -23,11 +24,15 @@ import { deliverCommand } from './command-delivery';
 import { SettingsStore } from './settings';
 import { defaultSettings, withCalibration } from '../shared/settings';
 import { isCalibrationV1 } from '../renderer/engine';
+import { STROKE_PRESETS } from '../renderer/stroke-presets';
 import { ElectronVoice } from './voice/electron-voice';
 import { dispatchVoiceCommand } from './voice/command-dispatch';
 import { anthropicKey, createIntentClient, interpretPlan, type IntentClient } from './voice/intent';
 import type { PlanStep } from './voice/plan';
 import { explainRejection } from './rejections';
+import { OUTSIDE_CANVAS_CODES, PenArming } from './pen-arming';
+import { StillLift } from './still-lift';
+import { validPenGesture } from '../shared/settings';
 import type { CommandEvent } from './voice/types';
 import type { VoiceCaptureReport } from '../shared/voice';
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -38,7 +43,10 @@ let realInput = false;
 const testFakeBackend = process.argv.includes('--test-fake-backend');
 const canvasCapture = new CanvasCapture();
 const canvasSetup = new CanvasSetup();
+const canvasSetRequest = new CanvasSetRequest();
 const canvasDiagnostics = new CanvasDiagnostics();
+let allowRememberedCanvas = true;
+let controlIntentEpoch = 0;
 let selectionOverlay: BrowserWindow | null = null, canvasOutline: BrowserWindow | null = null;
 let latestCanvasObservation: CanvasObservation | null = null;
 let latestCanvasReceivedAt = -Infinity;
@@ -107,10 +115,13 @@ function closeCanvasWindows(): void {
   overlay?.destroy(); outline?.destroy();
 }
 function invalidateCanvas(message = 'Canvas confirmation required. Select or detect the drawing area again.'): void {
+  canvasSetRequest.cancel();
+  pen.release(); stillLift.reset(); status.penArmed = false;
   canvas = null; canvasCapture.cancel(); pointer = null; status.canvasConfirmed = false;
   closeCanvasWindows(); canvasSetup.invalidate(message);
 }
 async function beginLegacyCanvas(): Promise<void> {
+  cancelPendingCanvasSet('Tracked canvas setup requested.');
   if(panelGeometryPending)throw new Error('Wait for panel geometry to settle, then Set canvas again.');
   await pause('Canvas setup requested; pen up.');
   // Refresh target identity/foreground metadata before using UI prerequisites.
@@ -118,11 +129,12 @@ async function beginLegacyCanvas(): Promise<void> {
   const reason = readyForControl({ ...status, generation }, false);
   if (reason) throw new Error(reason);
   if (!fixedKritaProfile()) throw new Error('Select the fixed Krita profile before canvas setup. Generic profiles are configuration previews.');
-  invalidateCanvas(); generation++; canvasCapture.begin();
+  allowRememberedCanvas = false; invalidateCanvas(); generation++; canvasCapture.begin();
   canvasSetup.legacy(true, null, canvasCapture.message);
   await configureControl(true); publish();
 }
 async function cancelCanvas(sessionId?: string): Promise<void> {
+  allowRememberedCanvas = false;
   if (sessionId !== undefined && sessionId !== canvasSetup.state.sessionId) throw new Error('Canvas selection expired.');
   const restorePid = selectionOverlay ? canvasSetup.targetPid : null;
   invalidateCanvas('Canvas setup canceled; input stays paused.');
@@ -148,12 +160,52 @@ async function canvasPrerequisites(): Promise<void> {
   selectedDisplay();
 }
 async function beginCanvas(): Promise<void> {
+  cancelPendingCanvasSet('Canvas detection requested.');
   await pause('Canvas detection requested; input stays paused.');
-  await canvasPrerequisites(); invalidateCanvas(); canvasSetup.detect();
+  await canvasPrerequisites(); allowRememberedCanvas = false; invalidateCanvas(); canvasSetup.detect();
   latestCanvasObservation = null; latestCanvasReceivedAt = -Infinity;
   generation++; await configureControl(); status.fault = null; publish();
 }
+function cancelPendingCanvasSet(message: string): void {
+  if (!canvasSetRequest.current) return;
+  canvasSetRequest.cancel();
+  canvasSetup.invalidate(message);
+  canvasSetup.preference = 'manual';
+  allowRememberedCanvas = false;
+  status.fault = message;
+}
+async function setCanvas(): Promise<void> {
+  if (canvasSetRequest.current) return;
+  await beginCanvas();
+  // Configuration may have failed or lost foreground while awaiting native ACKs.
+  await canvasPrerequisites();
+  canvasSetRequest.start({ generation, targetPid: status.targetPid!, displayId: selectedDisplay().id }, request => {
+    void configuration.run(async () => {
+      publish(); // Reconcile configuration/focus changes before a queued timeout acts.
+      if (!canvasSetRequest.consume(request)) return;
+      await openCanvasSetSelection(false, `No usable canvas was detected within 10 seconds. ${canvasSetup.state.detection.reason}`);
+    }).catch(error => fault(String(error)));
+  });
+  canvasSetup.state.active = true;
+  canvasSetup.state.message = 'Detecting canvas. A suggested workspace will open for review; otherwise mouse selection opens after 10 seconds.';
+  publish();
+}
+async function openCanvasSetSelection(review: boolean, explanation?: string): Promise<void> {
+  try {
+    if (review) await reviewWorkspace();
+    else await selectCanvas();
+    if (explanation) {
+      canvasSetup.state.message = `${explanation} Drag a rectangle around the drawing area, then choose Use canvas.`;
+      publish();
+    }
+  } catch (error) {
+    invalidateCanvas(`Canvas setup could not continue: ${String(error)}`);
+    canvasSetup.preference = 'manual';
+    fault(canvasSetup.state.message);
+  }
+}
 async function selectCanvas(initialSelection: Rect | null = null, reviewObservation: CanvasObservation | null = null): Promise<void> {
+  cancelPendingCanvasSet('Mouse canvas selection requested.');
   await pause('Mouse canvas selection requested; pen up.');
   await canvasPrerequisites();
   if (reviewObservation && (reviewObservation !== latestCanvasObservation || !freshWorkspaceSuggestion(reviewObservation, generation, status.targetPid, latestCanvasReceivedAt, performance.now()))) {
@@ -180,11 +232,12 @@ async function selectCanvas(initialSelection: Rect | null = null, reviewObservat
   const seedAdjusted = Boolean(seed && initialSelection && !sameCanvasRect(seed, initialSelection));
   const baseline = latestCanvasObservation;
   const identity = baseline ? canvasIdentity(baseline) : null;
-  invalidateCanvas(); generation++;
+  allowRememberedCanvas = false; invalidateCanvas(); generation++;
   const session = { sessionId: randomUUID(), generation, displayId: display.id };
   canvasSetup.beginMouse(session.sessionId, generation, display.id, pid, identity, seed, seedAdjusted, controlsBounds);
   if (baseline) canvasSetup.bindObservation(baseline);
   await configureControl();
+  await canvasPrerequisites();
   selectionSession(session);
   if (status.native?.buttonDown || status.nativeFault) throw new Error('Input could not be released. Recover the helper before selecting.');
   const overlay = new BrowserWindow({ ...display.bounds, frame: false, transparent: true, backgroundColor: '#00000000',
@@ -255,7 +308,7 @@ async function confirmCanvas(value: unknown): Promise<void> {
       await configureControl();
       if (!canvas) throw new Error(canvasSetup.state.message);
     });
-    status.canvasConfirmed = true; status.fault = null;
+    status.canvasConfirmed = true; status.fault = null; rememberCanvas(latestCanvasObservation);
     trackingEvidence('canvas-confirmed', { canvas, source: 'manual', realInput }); publish();
     void showCanvasOutline();
   } catch (error) {
@@ -276,13 +329,41 @@ async function showCanvasOutline(): Promise<void> {
   setTimeout(() => { if (canvasOutline === outline) canvasOutline = null; if (!outline.isDestroyed()) outline.destroy(); }, 1200);
 }
 
+/** Persist the accepted canvas with the Krita state it belongs to (hashed document identity, no titles). */
+function rememberCanvas(observation: CanvasObservation | null): void {
+  allowRememberedCanvas = true;
+  if (!canvas || !observation?.windowBounds || !observation.windowToken || status.selectedDisplayId === undefined) return;
+  savedSettings = { ...savedSettings, rememberedCanvas: { displayId: status.selectedDisplayId, canvas: { ...canvas }, windowBounds: { ...observation.windowBounds }, windowToken: observation.windowToken,
+    workspace: observation.workspaceSuggestion ? { ...observation.workspaceSuggestion } : null, viewport: observation.rect ? { ...observation.rect } : null } };
+  try { settingsStore.save(savedSettings); status.settings = savedSettings; } catch { /* remembering is best-effort */ }
+}
+/** Krita looks exactly as when the canvas was accepted: reapply it, still paused (Resume stays explicit). */
+async function restoreRememberedCanvas(observation: CanvasObservation, identity: string | null): Promise<void> {
+  const remembered = savedSettings.rememberedCanvas!;
+  const display = selectedDisplay(), bounds = panel?.getBounds();
+  let restored: Rect;
+  try { restored = validateCanvas(remembered.canvas, { x: remembered.canvas.x + remembered.canvas.width, y: remembered.canvas.y + remembered.canvas.height }, display.bounds, bounds ? [bounds] : []); }
+  catch { return; } // e.g. the panel now overlaps it: fall back to normal setup
+  await pause('Restoring your last canvas; input stays paused.');
+  closeCanvasWindows(); canvas = restored; status.canvasConfirmed = false; generation++;
+  try {
+    await configureControl(); if (!canvas) return;
+    canvasSetup.preference = 'manual';
+    canvasSetup.confirmed('manual', identity); canvasSetup.bindObservation(observation);
+    status.canvasConfirmed = true; status.fault = 'Canvas restored (Krita looks the same as last time). Resume when ready.';
+    trackingEvidence('canvas-restored', { canvas, realInput }); publish(); void showCanvasOutline();
+  } catch { invalidateCanvas('Could not restore the last canvas. Detect or select it again.'); publish(); }
+}
 async function observeCanvas(observation: CanvasObservation, native: NativeSupervisor): Promise<void> {
   if (supervisor !== native || !status.nativeClockReady || status.nativeFault) return;
   let nativeNow: number;
   try { nativeNow = native.clock.convert(performance.now(), performance.now()); } catch { return; }
   if (!freshCanvasObservation(observation, generation, status.targetPid, nativeNow, latestCanvasObservation?.observedAt ?? -Infinity, native.clock.uncertainty)) return;
   latestCanvasObservation = observation; latestCanvasReceivedAt = performance.now(); canvasSetup.observation(observation); canvasDiagnostics.observe(observation);
+  if (canvasSetRequest.current) canvasSetup.state.message = `${observation.reason} Waiting for a usable result; mouse selection opens after 10 seconds if needed.`;
   const identity = canvasIdentity(observation);
+  if (allowRememberedCanvas && !canvas && !canvasSetup.state.active && !selectionOverlay && !status.settingsOpen && !panelGeometryPending && fixedKritaProfile() && status.native?.foregroundTarget === 'org.krita'
+    && rememberedCanvasMatches(savedSettings.rememberedCanvas, observation, status.selectedDisplayId)) { await restoreRememberedCanvas(observation, identity); return; }
   if (canvasSetup.preference !== 'automatic') {
     const changes = canvasSetup.geometryChanges(observation);
     if ((canvas || canvasSetup.state.active) && changes.length > 0) {
@@ -309,6 +390,10 @@ async function observeCanvas(observation: CanvasObservation, native: NativeSuper
     publish(); return;
   }
   if (observation.availability !== 'available' || !observation.rect || !observation.kind) {
+    const request = canvasSetRequest.current;
+    if (request && freshWorkspaceSuggestion(observation, generation, status.targetPid, latestCanvasReceivedAt, performance.now()) && canvasSetRequest.consume(request)) {
+      await openCanvasSetSelection(true); return;
+    }
     if (canvas) {
       const reason = `${observation.reason} Select with mouse to continue.`;
       canvasDiagnostics.invalidated(reason, ['viewport-unavailable'], canvasSetup.diagnosticBaseline, observation);
@@ -321,15 +406,21 @@ async function observeCanvas(observation: CanvasObservation, native: NativeSuper
   try { detected = validateCanvas(observation.rect, { x: observation.rect.x + observation.rect.width, y: observation.rect.y + observation.rect.height }, display.bounds, bounds ? [bounds] : []); }
   catch (error) {
     canvasSetup.state.detection = { availability: 'unavailable', reason: String(error) };
+    const request = canvasSetRequest.current;
+    if (request && canvasSetRequest.consume(request)) {
+      await openCanvasSetSelection(false, `Detected bounds could not be used: ${String(error)}.`); return;
+    }
     if (canvas) { invalidateCanvas(String(error)); await pause(String(error)); generation++; await configureControl(); }
     canvasSetup.state.message = `${String(error)} Select with mouse, or move the panel and detect again.`; publish(); return;
   }
   if (canvas && sameCanvasRect(canvas, detected) && !canvasSetup.geometryChanged(observation) && canvasSetup.state.source === observation.kind) { canvasSetup.bindObservation(observation); publish(); return; }
+  canvasSetRequest.cancel(); // A valid detection completes Set canvas without opening review.
+  canvasSetup.state.active = false;
   await pause('Krita drawing area changed; input stays paused.');
   closeCanvasWindows(); canvas = detected; status.canvasConfirmed = false; generation++;
   try {
     await configureControl(); if (!canvas) return;
-    canvasSetup.confirmed(observation.kind, identity); canvasSetup.bindObservation(observation); status.canvasConfirmed = true; status.fault = null; publish(); void showCanvasOutline();
+    canvasSetup.confirmed(observation.kind, identity); canvasSetup.bindObservation(observation); status.canvasConfirmed = true; status.fault = null; rememberCanvas(observation); publish(); void showCanvasOutline();
   } catch (error) { invalidateCanvas('Detected bounds could not be configured. Select with mouse or recover the helper.'); throw error; }
 }
 function installBindings(): void {
@@ -341,6 +432,34 @@ function installBindings(): void {
 }
 
 let status: ProbeStatus = { native: null, displays: [], fault: null, collapsed: false, settingsOpen: false, generation, realInput, microphoneEnabled: false };
+const pen = new PenArming();
+let engagingPen = false;
+/** Fresh tracked pointer inside the canvas and outside every drawing-excluded window. */
+function pointerInCanvas(): boolean {
+  const position = freshPointer(pointer, generation, performance.now());
+  return Boolean(position && canvas && containsPoint(canvas, position) && !overlaySurfaces().some(win => containsPoint(win.getBounds(), position)));
+}
+function penContext() { return { native: supervisor?.state?.state, buttonDown: Boolean(supervisor?.state?.buttonDown), inCanvas: pointerInCanvas() }; }
+// The rest/lift gesture is retired in favor of lifting when still; saved gesture settings are ignored.
+function penGestureEnabled(): boolean { return false; }
+/**
+ * Holding still with the pen down lifts it (Steady Tracker's pen-up dwell: 1.2 s within 7.5 pt). It only arms once
+ * the pointer has moved 15 pt from where the pen went down, so a fresh "pen down" isn't lifted straight away.
+ */
+const stillLift = new StillLift();
+function liftWhenStill(position: Point, now: number): void {
+  if (!supervisor?.state?.buttonDown) { stillLift.reset(); return; }
+  if (!stillLift.update(position, now)) return;
+  pen.release(); status.penArmed = false;
+  void enqueueAction('penUp').then(() => publishPen('Held still: pen up. Say "pen down" to keep drawing.')).catch(error => fault(String(error)));
+}
+function publishPen(message?: string): void { status.penArmed = pen.armed; if (message !== undefined) status.fault = message; publish(); }
+/** Armed pen: press as soon as the tracked pointer is inside the canvas (native rules still apply). */
+function engageArmedPen(): void {
+  if (engagingPen || !pen.shouldEngage(penContext(), performance.now())) return;
+  engagingPen = true;
+  void enqueueAction('penDown').then(ack => pen.attempted(ack !== null, performance.now()), () => pen.attempted(false, performance.now())).finally(() => { engagingPen = false; publishPen(); });
+}
 /** Tracked-click targets per overlay surface, keyed by webContents id, in window-local coordinates. */
 const surfaceButtons = new Map<number, {actionId:LocalActionID;rect:Rect}[]>();
 let speechSession: string | null = null;
@@ -356,6 +475,10 @@ function trackingEvidence(type: string, data: unknown): void {
 function stopLiveProbe(): void { liveProbeLifecycle?.cancel(); }
 function releaseRealInput(): void { spawnSync(path.join(resourcesRoot(),'bin','SteadyNative'),['--release-and-exit',testFakeBackend?'--test-fake-backend':'--real-input'],{stdio:'ignore',timeout:1000}); }
 function publish(): void {
+  if (canvasSetRequest.current && (!canvasSetRequest.matches({ generation, targetPid: status.targetPid ?? 0, displayId: status.selectedDisplayId ?? -1 }) ||
+    status.settingsOpen || panelGeometryPending || status.nativeFault || status.native?.foregroundTarget !== 'org.krita')) {
+    cancelPendingCanvasSet('Canvas setup canceled because the configuration or foreground app changed. Return to Krita and choose Set canvas again.');
+  }
   if (canvasCapture.active) canvasSetup.legacy(true, canvasCapture.firstCorner, canvasCapture.message);
   status = {...status, generation, realInput, canvas, canvasSetup: structuredClone(canvasSetup.state), canvasDiagnostics: canvasDiagnostics.snapshot()};
   for (const win of [panel,settings,advanced,selectionOverlay,canvasOutline,utilities.preview]) if (win && !win.isDestroyed()) win.webContents.send('steady:status-changed', statusForWindow(win));
@@ -378,6 +501,7 @@ function trackCanvasSurface(win: BrowserWindow): void {
 }
 function fault(message: string): void { status.fault = message; publish(); }
 async function pause(reason: string): Promise<void> {
+  controlIntentEpoch++; pen.release(); stillLift.reset(); status.penArmed = false;
   stopLiveProbe();
   if (!supervisor) return;
   try { await supervisor.request('action', { generation:supervisor.state?.generation ?? 0, eventId: randomUUID(), actionId: 'pause' }); }
@@ -393,15 +517,21 @@ function enqueueAction(action: LocalActionID, eventId = randomUUID()): Promise<A
   return deliverCommand(configuration, () => generation, action, () => dispatch(action, eventId))
     .catch((error: unknown) => { throw error instanceof Error ? new Error(explainRejection(error.message, status.native)) : error; });
 }
+/** Krita's erase mode as Steady last set it (Krita exposes no state); every E Steady sends goes through dispatch. */
+let eraserOn = false;
 async function dispatch(actionId: LocalActionID, eventId: string = randomUUID()): Promise<Ack | null> {
   if (!isLocalAction(actionId)) throw new Error('Unknown action');
   stopLiveProbe();
   switch (actionId) {
     case 'microphoneOff': await microphone(false); return null;
+    case 'tremorFilter': await toggleTremorFilter(); return null;
+    // Krita's E only toggles, so "eraser" presses it only when Steady last left erase mode off.
+    case 'eraser': if (eraserOn) return null; actionId = 'toggleErase'; break;
     case 'openSettings': await openSettings(); return null;
     case 'togglePanel': await collapsePanel(!status.collapsed); return null;
     case 'quit': app.quit(); return null;
     case 'recover': await recoverNative(); return null;
+    case 'setCanvas': await setCanvas(); return null;
     case 'beginCanvas': await beginCanvas(); return null;
     case 'selectCanvas': await selectCanvas(); return null;
     case 'reviewWorkspace': await reviewWorkspace(); return null;
@@ -412,10 +542,11 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
       invalidateCanvas(); await pause('Recenter: capture a new neutral position; input remains paused');
       panel?.webContents.send('steady:recenter'); publish(); return null;
     case 'pause':
-      if ((canvasSetup.state.mode === 'mouse' && canvasSetup.state.active) || canvasCapture.active) {
+      if (canvasSetRequest.current || (canvasSetup.state.mode === 'mouse' && canvasSetup.state.active) || canvasCapture.active) {
         const sessionId = canvasSetup.state.sessionId ?? undefined;
         // Release immediately; serialize setup cancellation behind configuration
         // already in flight rather than racing its generation changes.
+        cancelPendingCanvasSet('Canvas setup canceled; input stays paused.');
         await pause('Paused');
         void configuration.run(() => cancelCanvas(sessionId)).catch(error => fault(String(error)));
         return null;
@@ -437,7 +568,7 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
         if (!canvas) throw new Error(canvasSetup.state.message);
         canvasSetup.confirmed('manual', latestCanvasObservation ? canvasIdentity(latestCanvasObservation) : null);
         if (latestCanvasObservation) canvasSetup.bindObservation(latestCanvasObservation);
-        status.canvasConfirmed = true;
+        status.canvasConfirmed = true; rememberCanvas(latestCanvasObservation);
         trackingEvidence('canvas-confirmed', { canvas, realInput });
       }
       publish(); return null;
@@ -448,6 +579,9 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
       const reason = readyForControl({ ...status, generation }, true);
       if (reason) throw new Error(reason);
       if (nativeConfiguredTarget !== status.targetPid) throw new Error('Krita restarted. Recover the native helper and reconfirm canvas.');
+      // Resume is the explicit confirmation of the selected hand after a loss (the panel confirms only if
+      // exactly that hand is in view), so users don't loop through a separate Confirm step that pauses again.
+      if (savedSettings.mode === 'palm') panel?.webContents.send('steady:confirm-hand');
       break;
     }
     case 'click': {
@@ -471,12 +605,67 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
     await supervisor.request('action',{generation,eventId:randomUUID(),actionId:'penUp'});
     throw new Error('Close Settings before pointer actions.');
   }
-  if (['resume','penDown','penToggle','click','undo','redo','brush','toggleErase','bigger','smaller'].includes(actionId) && !fixedKritaProfile()) {
+  if (['resume','penDown','penToggle','click','undo','redo','brush','toggleErase','bigger','smaller','swapColors'].includes(actionId) && !fixedKritaProfile()) {
     await supervisor.request('action', { generation, eventId: randomUUID(), actionId: 'penUp' });
     throw new Error('Generic shortcut profiles are unverified configuration previews. Select the fixed Krita profile to execute.');
   }
+  if (actionId === 'penDown' || actionId === 'penToggle') {
+    const decision = pen.request(actionId === 'penDown' ? 'down' : 'toggle', penContext());
+    if (decision === 'not-tracking') { publishPen(); throw new Error('Resume tracking first, then put the pen down.'); }
+    if (decision === 'disarm') { publishPen('Pen disarmed.'); return null; }
+    publishPen();
+    if (decision === 'press') {
+      try {
+        const ack = await supervisor.request('action', { generation, eventId, actionId: actionId as ActionID });
+        status.fault = null; publish(); return ack;
+      } catch (error) {
+        // Pointer on the panel or outside the canvas: stay armed and press on entering the canvas.
+        if (pen.armed && error instanceof Error && OUTSIDE_CANVAS_CODES.includes(error.message)) { publishPen('Pen armed — it goes down when your hand moves into the canvas.'); return null; }
+        pen.release(); publishPen(); throw error;
+      }
+    }
+  }
+  if (actionId === 'penUp') { controlIntentEpoch++; pen.release(); stillLift.reset(); status.penArmed = false; }
+  if (actionId === 'resume') return resumeWhenSteady(eventId);
   const ack = await supervisor.request('action', { generation, eventId, actionId: actionId as ActionID });
+  if (actionId === 'toggleErase') eraserOn = !eraserOn;
+  // Choosing the brush means painting: B keeps Krita's erase mode, so turn it off as well.
+  if (actionId === 'brush' && eraserOn) { await supervisor.request('action', { generation, eventId: randomUUID(), actionId: 'toggleErase' }); eraserOn = false; }
   status.fault = null; publish(); return ack;
+}
+/** Voice "tremor filter": switch to the Tremor Filter stroke mode's smoothing, or back to the smoothing used before it. Sensitivity is kept. */
+let smoothingBeforeTremor: number | null = null;
+async function toggleTremorFilter(): Promise<void> {
+  const tremor = STROKE_PRESETS.find(preset => preset.id === 'tremor')!.smoothing, steady = STROKE_PRESETS.find(preset => preset.id === 'steady')!.smoothing;
+  const current = savedSettings.calibrations.find(c => c.cameraId === savedSettings.cameraId && c.mode === savedSettings.mode);
+  if (!current) throw new Error('Calibrate before choosing a stroke mode.');
+  const on = current.smoothing !== tremor;
+  const smoothing = on ? tremor : smoothingBeforeTremor ?? steady;
+  smoothingBeforeTremor = on ? current.smoothing : null;
+  // As with panel tuning, release a held pen so the mapping change can never extend a stroke.
+  pen.release(); stillLift.reset(); status.penArmed = false;
+  if (status.native?.buttonDown) await supervisor?.request('action', { generation, eventId: randomUUID(), actionId: 'penUp' });
+  savedSettings = withCalibration(savedSettings, { ...current, smoothing }); settingsStore.save(savedSettings); status.settings = savedSettings; publish();
+}
+/**
+ * Native Resume needs 500 ms of consecutive valid tracking. Right after the hand is (re)confirmed that is
+ * not yet true, so wait up to ~1.5 s for it instead of failing; any other refusal is reported at once.
+ */
+async function resumeWhenSteady(eventId: string): Promise<Ack | null> {
+  const deadline = performance.now() + 1500;
+  const epoch = controlIntentEpoch, native = supervisor, resumeGeneration = generation;
+  for (;;) {
+    if (controlIntentEpoch !== epoch || supervisor !== native || generation !== resumeGeneration) throw new Error('Resume canceled; retry explicitly.');
+    try {
+      const ack = await supervisor!.request('action', { generation, eventId: eventId || randomUUID(), actionId: 'resume' });
+      status.fault = null; publish(); return ack;
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'prerequisites' || performance.now() >= deadline) throw error;
+      status.fault = 'Hold your hand steady in view…'; publish();
+      await new Promise(resolve => setTimeout(resolve, 150));
+      eventId = randomUUID();
+    }
+  }
 }
 async function collapsePanel(collapsed: boolean): Promise<void> {
   status.collapsed = collapsed; panel?.setSize(PANEL_WIDTH, collapsed ? PANEL_COLLAPSED_HEIGHT : PANEL_HEIGHT, false); if (panel) surfaceButtons.delete(panel.webContents.id);
@@ -486,7 +675,7 @@ async function collapsePanel(collapsed: boolean): Promise<void> {
   generation++; await configureControl(); publish();
 }
 
-/** Voice input (Cartesia STT + local wake word) replaces the deferred native speech path; the helper's microphone stays off. */
+/** Voice input (Cartesia STT + local command words) replaces the deferred native speech path; the helper's microphone stays off. */
 async function microphone(enabled: boolean): Promise<void> {
   if (!voice) throw new Error('Voice input is unavailable.');
   voice.setMicrophone(enabled);
@@ -540,7 +729,7 @@ async function loadView(win: BrowserWindow, view: string): Promise<void> {
   else await win.loadFile(path.join(__dirname,`../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),{query:{view}});
 }
 async function openSettings(): Promise<void> {
-  if (selectionOverlay || canvasCapture.active) invalidateCanvas('Settings opened; canvas selection canceled.');
+  if (canvasSetRequest.current || selectionOverlay || canvasCapture.active) invalidateCanvas('Settings opened; canvas selection canceled.');
   status.settingsOpen=true;publish();
   await pause('Settings opened; input paused');
   if (settings) { settings.show(); settings.focus(); return; }
@@ -684,6 +873,7 @@ function installIPC(): void {
     const current=savedSettings.calibrations.find(c=>c.cameraId===value.cameraId&&c.mode===value.mode);
     const fixed=(c:typeof value)=>JSON.stringify([c.schemaVersion,c.selectedHand,c.neutral.x,c.neutral.y,c.extents.left,c.extents.right,c.extents.up,c.extents.down,c.jitter.x,c.jitter.y]);
     if(!current||fixed(current)!==fixed(value))throw new Error('Only smoothing and sensitivity can be tuned from the panel');
+    pen.release(); stillLift.reset(); status.penArmed=false;
     if(status.native?.buttonDown)await supervisor?.request('action',{generation,eventId:randomUUID(),actionId:'penUp'});
     savedSettings=withCalibration(savedSettings,value);settingsStore.save(savedSettings);status.settings=savedSettings;publish();
   }));
@@ -696,6 +886,16 @@ function installIPC(): void {
     if(!orientations.length)delete savedSettings.orientations;
     settingsStore.save(savedSettings);status.settings=savedSettings;status.canvasConfirmed=false;
     invalidateCanvas();await configureControl();status.fault='Camera orientation changed; recalibrate';publish();
+  }));
+  handle('save-pen-gesture',(value:unknown)=>configuration.run(async()=>{
+    const remove=isObject(value)&&value.remove===true&&typeof value.cameraId==='string';
+    if(!remove&&!validPenGesture(value))throw new Error('Invalid pen gesture setting');
+    const cameraId=(value as {cameraId:string}).cameraId;
+    await pause('Pen gesture setting changed; Resume when ready.');pen.release();
+    const rest=(savedSettings.penGestures??[]).filter(entry=>entry.cameraId!==cameraId);
+    const penGestures=remove?rest:[...rest,value as import('../shared/settings').PenGestureSetting];
+    savedSettings={...savedSettings,penGestures};if(!penGestures.length)delete savedSettings.penGestures;
+    settingsStore.save(savedSettings);status.settings=savedSettings;publishPen();
   }));
   handle('panel-opacity',(opacity:unknown)=>{if(opacity!==1&&opacity!==0.7)throw new Error('Invalid opacity');for(const win of overlaySurfaces())win.setOpacity(opacity);status.panelOpacity=opacity;publish();});
   handle('select-display',(displayId:unknown)=>configuration.run(async()=>{
@@ -736,6 +936,19 @@ function installIPC(): void {
     if(event.sender!==panel?.webContents || (canvasSetup.state.mode === 'mouse' && canvasSetup.state.active) || !mappedSampleAllowed(sample,position,{...status,generation},performance.now()))return;
     pointer = sample.valid ? { position: position as Point, timestamp: sample.captureTimestamp, generation } : null;
     if(supervisor?.state?.generation===generation)supervisor.submit(sample, sample.valid ? position as Point : null, sample.captureTimestamp);
+    if(sample.valid&&pen.armed)engageArmedPen();
+    if(sample.valid)liftWhenStill(position as Point,performance.now());else stillLift.reset();
+  });
+  // Rest/lift gesture (opt-in): rest arms the pen (it presses inside the canvas only); lift releases.
+  ipcMain.on('steady:pen-gesture',(event,state:unknown,gestureGeneration:unknown)=>{
+    trusted(event);
+    if(event.sender!==panel?.webContents||(state!=='rest'&&state!=='lift')||gestureGeneration!==generation||!penGestureEnabled())return;
+    if(state==='lift'){
+      pen.release();publishPen();
+      if(supervisor?.state?.buttonDown)void enqueueAction('penUp').catch(error=>fault(String(error)));
+      return;
+    }
+    void enqueueAction('penDown').catch(()=>publishPen());
   });
   ipcMain.on('steady:voice-frame',(event,pcm:unknown)=>{if(event.sender!==panel?.webContents||event.senderFrame!==event.sender.mainFrame)return;voice?.frame(pcm);});
   ipcMain.on('steady:voice-report',(event,report:unknown)=>{
@@ -762,6 +975,8 @@ async function startNative(): Promise<void> {
         releaseAfterCaptureMs:state.lastValidCaptureTimestamp==null?null:state.lastReleaseTimestamp-state.lastValidCaptureTimestamp,
         buttonDown:state.buttonDown,clockUncertaintyMs:next.clock.uncertainty});
     }
+    if(pen.native(state.state))status.penArmed=false;
+    if(!state.buttonDown)stillLift.reset();
     if(status.native && ['HOVER','DRAWING'].includes(status.native.state) && state.state!==status.native.state && state.reason==='stale-capture')showToast('trackingLost');
     status.native=state;if(state.reason==='microphone-enabled'&&speechSession!==null)status.microphoneEnabled=true;if(state.reason==='microphone-disabled')status.microphoneEnabled=false;if(state.reason==='speech-assets-ready')status.speechDiagnostics={...(status.speechDiagnostics??emptySpeechDiagnostics(speechSession)),assets:'ready'};publish();});
   next.on('fault',(message)=>{if(supervisor!==next)return;invalidateCanvas('Native helper unavailable; recover it and set the canvas again.');speechSession=null;status.microphoneEnabled=false;status.nativeClockReady=false;status.nativeFault=message;trackingEvidence('native-fault',{message});fault(message);});
@@ -771,7 +986,7 @@ async function startNative(): Promise<void> {
   const targetUpdated = (pid: number | null): void => {
     if (supervisor !== next || status.targetPid === pid) return;
     const previous = status.targetPid;
-    status.targetPid = pid;
+    status.targetPid = pid; eraserOn = false; // a relaunched Krita starts with erase mode off
     if (previous === undefined && !canvas && !canvasSetup.state.active) { publish(); return; }
     invalidateCanvas('Krita target changed; set the canvas again.');
     void configuration.run(async () => {
@@ -818,6 +1033,7 @@ async function recoverNative(): Promise<void> {
   const old=supervisor; supervisor=null; await old?.stop();
   invalidateCanvas(); nativeConfiguredTarget=null; status.native=null; status.nativeFault=null; status.nativeClockReady=false;
   status.fault=null; generation++;
+  allowRememberedCanvas = true;
   await startNative(); publish();
 }
 async function main(): Promise<void> {
@@ -913,6 +1129,7 @@ async function main(): Promise<void> {
   publish();
 }
 app.on('before-quit',event=>{
+  canvasSetRequest.cancel();
   if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;quitting=true;bindingInstaller.clear();
   stopLiveProbe();
   void Promise.allSettled([voice?.stop(),supervisor?.stop()]).finally(()=>app.quit());

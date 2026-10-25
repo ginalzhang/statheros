@@ -210,7 +210,7 @@ public final class NativeEngine: @unchecked Sendable {
    guard release() else{return "native-release-failed"};if state.state == .drawing {state.state = .hover}
    guard state.state == .hover,!excluded.contains(where:{$0.contains(position)}),canvas?.contains(position)==true,let last=lastCapture,now-last<250 else{return "not-hover-or-panel"}
    guard guarded() else{return "foreground"};guard backend.button(true,at:position) else{pause("native-post-guard");return "native-post-guard"};state.buttonDown=true;guard release() else{return "native-release-failed"};return "ok"
-  case .undo,.redo,.brush,.toggleErase,.bigger,.smaller:
+  case .undo,.redo,.brush,.toggleErase,.bigger,.smaller,.swapColors:
    guard release() else{return "native-release-failed"};if state.state == .drawing {state.state = .hover}
    guard state.state == .hover || state.state == .paused else{return "state"}
    guard guarded() else{return "foreground"};guard backend.shortcut(a) else{pause("native-post-guard");return "native-post-guard"};return "ok"

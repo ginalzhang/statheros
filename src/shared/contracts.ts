@@ -1,9 +1,9 @@
 /** Fixed wire contract. All timestamps are monotonic milliseconds. */
 export const PROTOCOL_VERSION = 1 as const;
 export const MAX_MESSAGE_BYTES = 16 * 1024;
-export const ACTIONS = ['penDown', 'penUp', 'penToggle', 'click', 'undo', 'redo', 'brush', 'toggleErase', 'bigger', 'smaller', 'pause', 'resume', 'recenter', 'markCorner', 'microphoneOff'] as const;
+export const ACTIONS = ['penDown', 'penUp', 'penToggle', 'click', 'undo', 'redo', 'brush', 'eraser', 'toggleErase', 'bigger', 'smaller', 'swapColors', 'pause', 'resume', 'recenter', 'markCorner', 'microphoneOff', 'tremorFilter'] as const;
 export type ActionID = typeof ACTIONS[number];
-export const LOCAL_ACTIONS = ['openSettings', 'togglePanel', 'quit', 'beginCanvas', 'selectCanvas', 'reviewWorkspace', 'beginLegacyCanvas', 'cancelCanvas', 'recover', 'confirmHand'] as const;
+export const LOCAL_ACTIONS = ['openSettings', 'togglePanel', 'quit', 'setCanvas', 'beginCanvas', 'selectCanvas', 'reviewWorkspace', 'beginLegacyCanvas', 'cancelCanvas', 'recover', 'confirmHand'] as const;
 export type LocalActionID = ActionID | typeof LOCAL_ACTIONS[number];
 export type ShortcutActionID = 'undo' | 'redo' | 'brush' | 'toggleErase' | 'bigger' | 'smaller';
 export interface ShortcutProfile { name: string; targetBundleId: string; shortcuts: Record<ShortcutActionID, string> }
@@ -74,7 +74,7 @@ export type Reply = { [K in keyof ReplyPayloads]: Envelope<K, ReplyPayloads[K]> 
 /** Preload allowlist: the renderer never chooses a native wire type. */
 export interface SpeechDiagnostics {v:1;session:string|null;phase:'idle'|'permission'|'checkingAssets'|'preparing'|'listening'|'stopped'|'error';assets:'unknown'|'installing'|'ready'|'missing'|'error';audioBuffers:number;audioSeconds:number;transcriberResults:number;transcriberFinals:number;detectorResults:number;speechResults:number;silenceResults:number;acceptedUtterances:number;errorCode:string|null}
 export interface TrackingProbeMetrics { frames: number; validFrames: number; mappedFrames: number; elapsedMs: number; mappingHz: number; receiptToMappedP95Ms: number | null; position: Point | null; reason: string }
-export interface ProbeStatus { canvasSurfaceBounds?: Rect; canvasSetup?: CanvasSetupStatus; canvasDiagnostics?: CanvasDiagnosticsReport; canvas?: Rect | null; targetPid?: number | null; bindings?: GlobalBindings; bindingConflicts?: string[]; profile?: ShortcutProfile;  nativeFault?: string | null; native: NativeState | null; displays: DisplayInfo[]; fault: string | null; collapsed: boolean; settingsOpen: boolean; realInput: boolean; generation: number; microphoneEnabled?: boolean; selectedDisplayId?:number; speechDiagnostics?:SpeechDiagnostics; nativeClockReady?:boolean; settings?: import('./settings').SettingsV1; canvasConfirmed?: boolean; panelOpacity?: number; trackingMetrics?: TrackingProbeMetrics }
+export interface ProbeStatus { canvasSurfaceBounds?: Rect; canvasSetup?: CanvasSetupStatus; canvasDiagnostics?: CanvasDiagnosticsReport; canvas?: Rect | null; targetPid?: number | null; bindings?: GlobalBindings; bindingConflicts?: string[]; profile?: ShortcutProfile;  nativeFault?: string | null; native: NativeState | null; displays: DisplayInfo[]; fault: string | null; collapsed: boolean; settingsOpen: boolean; realInput: boolean; generation: number; microphoneEnabled?: boolean; selectedDisplayId?:number; speechDiagnostics?:SpeechDiagnostics; nativeClockReady?:boolean; settings?: import('./settings').SettingsV1; canvasConfirmed?: boolean; panelOpacity?: number; penArmed?: boolean; trackingMetrics?: TrackingProbeMetrics }
 export interface SteadyAPI {
   status(): Promise<ProbeStatus>;
   onStatus(callback: (status: ProbeStatus) => void): () => void;
@@ -106,6 +106,9 @@ export interface SteadyAPI {
   tuneCalibration(calibration: CalibrationV1): Promise<void>;
   setPanelOpacity(opacity: 1 | 0.7): Promise<void>;
   setCameraOrientation(cameraId: string, flipX: boolean, flipY: boolean): Promise<void>;
+  /** Rest/lift gesture transition from the panel's tracker (Palm mode, opt-in). */
+  penGesture(state: 'rest' | 'lift', generation: number): void;
+  savePenGesture(setting: import('./settings').PenGestureSetting | { cameraId: string; remove: true }): Promise<void>;
   submitMappedProbe(sample: TrackingSample, position: Point | null): void;
   microphone(enabled: boolean): Promise<void>;
   installSpeechAssets(): Promise<void>;
