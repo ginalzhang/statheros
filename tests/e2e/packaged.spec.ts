@@ -146,11 +146,13 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).native?.state)).toBe('SETUP');
     const sample = async (position:{x:number;y:number}, count=1):Promise<void> => {
       for(let index=0;index<count;index++) {
-        await page.evaluate(async position=>{
+        const frameId = await page.evaluate(async position=>{
           const status=await window.steady.status();
           const root=globalThis as any;root.phase03Frame=Math.max(root.phase03Frame??0,status.native?.latestValidFrame??0)+1;
           window.steady.submitMappedProbe({generation:status.generation,frameId:root.phase03Frame,captureTimestamp:performance.now(),mode:status.settings!.mode,valid:true,anchor:{x:.5,y:.5},qualityReason:'phase03 synthetic mapped fixture'},position);
+          return root.phase03Frame as number;
         },position);
+        await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).native?.latestValidFrame)).toBe(frameId);
         await page.waitForTimeout(35);
       }
     };
