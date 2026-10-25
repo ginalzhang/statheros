@@ -1,9 +1,13 @@
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { MakerZIP } from '@electron-forge/maker-zip';
+import { signingIdentity } from './scripts/signing-identity.mjs';
+
+const identity = signingIdentity();
+console.log(`Signing with ${identity === '-' ? 'ad-hoc identity (run npm run setup:signing to keep permissions across rebuilds)' : `"${identity}"`}`);
 export default {
   packagerConfig: {
     name: 'Steady', executableName: 'Steady', appBundleId: 'org.steady.local', icon: 'resources/icon/statheros',
-    appVersion: '0.1.0', asar: true, osxSign: { identity: '-', identityValidation: false, preAutoEntitlements: false, continueOnError: false, optionsForFile: () => ({ hardenedRuntime: false }) },
+    appVersion: '0.1.0', asar: true, osxSign: { identity, identityValidation: false, preAutoEntitlements: false, continueOnError: false, optionsForFile: () => ({ hardenedRuntime: false }) },
     extraResource: ['resources/bin', 'resources/assets', 'resources/asset-manifest.json', 'resources/voice'],
     extendInfo: {
       LSMinimumSystemVersion: '26.0', LSUIElement: true,

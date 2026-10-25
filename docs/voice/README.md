@@ -64,4 +64,6 @@ Both are buttons in **Settings › Voice**. The self-test checks 16000 ± 1 % sa
 
 ## Permissions
 
+Run `npm run setup:signing` once per Mac before packaging. Ad-hoc builds change identity on every rebuild, so macOS silently drops the Microphone and Accessibility grants; builds signed with the local "Steady Local Signing" certificate keep them. Without the certificate, packaging falls back to ad-hoc signing.
+
 The mic permission belongs to the host process: **Electron** in dev, **Steady** when packaged. If the prompt never appears, run `tccutil reset Microphone org.steady.local` (or `com.github.Electron` in dev). The packaged app declares `NSMicrophoneUsageDescription`. The hardened runtime is off, so `com.apple.security.device.audio-input` is not required. If you enable the hardened runtime, add that entitlement.
