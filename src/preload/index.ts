@@ -73,6 +73,7 @@ const api: SteadyAPI = Object.freeze({
   saveCalibration: (calibration: CalibrationV1): Promise<void> => ipcRenderer.invoke('steady:save-calibration', calibration),
   tuneCalibration: (calibration: CalibrationV1): Promise<void> => ipcRenderer.invoke('steady:tune-calibration', calibration),
   setPanelOpacity: (opacity: 1 | 0.7): Promise<void> => ipcRenderer.invoke('steady:panel-opacity', opacity),
+  setCameraOrientation: (cameraId: string, flipX: boolean, flipY: boolean): Promise<void> => ipcRenderer.invoke('steady:set-orientation', cameraId, flipX, flipY),
   submitMappedProbe: (sample: TrackingSample, position: Point | null): void => { if (clockReady) ipcRenderer.send('steady:mapped-probe', { ...sample, captureTimestamp: sample.captureTimestamp + clockOffset }, position); },
   microphone: (enabled: boolean): Promise<void> => ipcRenderer.invoke('steady:microphone', enabled),
   installSpeechAssets: (): Promise<void> => ipcRenderer.invoke('steady:install-speech-assets'),

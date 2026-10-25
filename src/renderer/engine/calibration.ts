@@ -118,6 +118,8 @@ export class CalibrationSession {
   get step(): CaptureStep | null { return CALIBRATION_STEPS[this.index] ?? null; }
   get active(): boolean { return this.capture !== null; }
   get captures(): Partial<Record<CaptureStep, CaptureSummary>> { return structuredClone(this.values); }
+  /** The neutral capture, once taken (read-only; used for the live calibration guide). */
+  get neutral(): Readonly<CaptureSummary> | undefined { return this.values.neutral; }
   start(now: number): void {
     if (this.active || this.step === null) throw new Error('No available capture step');
     this.capture = new CalibrationCapture({ ...this.context, selectedHand: this.values.neutral?.selectedHand ?? this.context.selectedHand }, now);

@@ -308,6 +308,16 @@ function installIPC(): void {
     if(status.native?.buttonDown)await supervisor?.request('action',{generation,eventId:randomUUID(),actionId:'penUp'});
     savedSettings=withCalibration(savedSettings,value);settingsStore.save(savedSettings);status.settings=savedSettings;publish();
   }));
+  // Orientation changes the tracked coordinate space: the camera's saved calibrations no longer apply.
+  handle('set-orientation',(cameraId:unknown,flipX:unknown,flipY:unknown)=>configuration.run(async()=>{
+    if(typeof cameraId!=='string'||cameraId.length>1024||typeof flipX!=='boolean'||typeof flipY!=='boolean')throw new Error('Invalid camera orientation');
+    await pause('Camera orientation changed; recalibrate');generation++;
+    const orientations=[...(savedSettings.orientations??[]).filter(entry=>entry.cameraId!==cameraId),...(flipX||flipY?[{cameraId,flipX,flipY}]:[])];
+    savedSettings={...savedSettings,orientations,calibrations:savedSettings.calibrations.filter(c=>c.cameraId!==cameraId)};
+    if(!orientations.length)delete savedSettings.orientations;
+    settingsStore.save(savedSettings);status.settings=savedSettings;status.canvasConfirmed=false;
+    invalidateCanvas();await configureControl();status.fault='Camera orientation changed; recalibrate';publish();
+  }));
   handle('panel-opacity',(opacity:unknown)=>{if(opacity!==1&&opacity!==0.7)throw new Error('Invalid opacity');panel?.setOpacity(opacity);status.panelOpacity=opacity;publish();});
   handle('select-display',(displayId:unknown)=>configuration.run(async()=>{
     if(!uint(displayId)||!status.displays.some(display=>display.id===displayId))throw new Error('Unknown native display');

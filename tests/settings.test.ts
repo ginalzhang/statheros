@@ -28,3 +28,13 @@ describe('shared tracking contract authority', () => {
     writeFileSync(filename, JSON.stringify({ ...s, schemaVersion: 2 })); expect(store.load().settings).toEqual(defaultSettings());
   });
 });
+
+describe('camera orientations', () => {
+  it('accepts per-camera flips and rejects malformed or duplicate entries', () => {
+    const base = defaultSettings();
+    expect(isSettingsV1({ ...base, orientations: [{ cameraId: 'cam', flipX: false, flipY: true }] })).toBe(true);
+    expect(isSettingsV1({ ...base, orientations: [{ cameraId: 'cam', flipX: 'no', flipY: true }] })).toBe(false);
+    expect(isSettingsV1({ ...base, orientations: [{ cameraId: 'cam', flipX: true, flipY: true }, { cameraId: 'cam', flipX: false, flipY: true }] })).toBe(false);
+    expect(isSettingsV1({ ...base, orientations: [{ cameraId: 'cam', flipX: true, flipY: true, extra: 1 }] })).toBe(false);
+  });
+});

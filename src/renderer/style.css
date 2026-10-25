@@ -139,3 +139,10 @@ dd { margin: 0; }
 .binding-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 18px; }
 .binding-grid label { grid-template-columns: 115px minmax(100px, 1fr); }
 @media (max-width: 650px) { .binding-grid { grid-template-columns: 1fr; } }
+
+/* Calibration guide (Settings). */
+.calibration-guide { margin: 8px 0; }
+.calibration-guide .meter { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
+.calibration-guide .meter span { display: block; height: 100%; background: var(--selected); transition: width 120ms linear; }
+.calibration-guide .meter.ok span { background: var(--toggle-on); }
+.orientation .secondary { margin-top: 0; }

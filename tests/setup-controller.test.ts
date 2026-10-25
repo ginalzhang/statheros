@@ -68,3 +68,51 @@ describe('integrated panel calibration workflow with fake input', () => {
     await vi.advanceTimersByTimeAsync(3000); expect(controller.state.calibration).toBeNull();
   });
 });
+
+describe('calibration guide and auto-capture', () => {
+  const at = (position: Point) => ({ generation: 1, frameId: ++frame, captureTimestamp: performance.now(), mode: 'head' as const, valid: true, anchor: position, qualityReason: 'valid' });
+  async function hold(controller: SetupController, position: Point, ms: number): Promise<void> {
+    for (let t = 0; t < ms; t += 1000 / 30) { controller.sample(at(position)); await vi.advanceTimersByTimeAsync(1000 / 30); }
+  }
+  const setup = () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const save = vi.fn<(c: CalibrationV1) => Promise<void>>().mockResolvedValue(undefined);
+    const controller = new SetupController(() => {}, save, vi.fn());
+    controller.update({ ...defaultSettings(), cameraId: calibration.cameraId }, display, 1);
+    controller.begin();
+    return { controller, save };
+  };
+  it('auto-captures all five steps after holding still once far enough, then saves', async () => {
+    const { controller, save } = setup();
+    for (const position of [{ x: .5, y: .5 }, { x: .4, y: .5 }, { x: .6, y: .5 }, { x: .5, y: .4 }, { x: .5, y: .6 }]) {
+      await hold(controller, position, 1100);
+      expect(controller.state.active).toBe(true);
+      await hold(controller, position, 2100);
+    }
+    expect(save).toHaveBeenCalledOnce();
+  });
+  it('does not capture short of target, while moving, or with auto-capture off', async () => {
+    const { controller } = setup();
+    await hold(controller, { x: .5, y: .5 }, 1100); await hold(controller, { x: .5, y: .5 }, 2100); // neutral
+    expect(controller.state.step).toBe('left');
+    await hold(controller, { x: .48, y: .5 }, 1500); // only 0.02 left: short of the 0.05 target
+    expect(controller.state.active).toBe(false);
+    expect(controller.state.guide).toMatchObject({ step: 'left', farEnough: false });
+    expect(controller.state.guide?.offset).toBeCloseTo(0.02);
+    for (let i = 0; i < 45; i++) { controller.sample(at({ x: .4 - (i % 2) * .03, y: .5 })); await vi.advanceTimersByTimeAsync(1000 / 30); } // jittering
+    expect(controller.state.active).toBe(false);
+    controller.setAutoCapture(false);
+    await hold(controller, { x: .4, y: .5 }, 1500);
+    expect(controller.state.active).toBe(false);
+    expect(controller.state.guide).toMatchObject({ farEnough: true });
+  });
+  it('the right step does not fire from the left position (offset sign)', async () => {
+    const { controller } = setup();
+    await hold(controller, { x: .5, y: .5 }, 1100); await hold(controller, { x: .5, y: .5 }, 2100);
+    await hold(controller, { x: .4, y: .5 }, 1100); await hold(controller, { x: .4, y: .5 }, 2100); // left captured
+    expect(controller.state.step).toBe('right');
+    await hold(controller, { x: .4, y: .5 }, 1500);
+    expect(controller.state.active).toBe(false);
+    expect(controller.state.guide?.offset).toBeLessThan(0);
+  });
+});

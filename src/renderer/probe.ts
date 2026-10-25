@@ -1,5 +1,5 @@
 import type { Mode, TrackingSample } from '../shared/contracts';
-import { drawLandmarkOverlay, drawMirroredPreview, FrameGate, FrameProgress, SampleGate, SelectedHandContinuity, type HandLabel, type Landmark, type PreviewOverlay } from './tracking';
+import { DEFAULT_ORIENTATION, displayLandmarks, drawLandmarkOverlay, drawMirroredPreview, edgeProximity, FrameGate, FrameProgress, orientPoint, SampleGate, SelectedHandContinuity, type Edge, type HandLabel, type Landmark, type Orientation, type PreviewOverlay } from './tracking';
 
 export interface ProbeReport {
   mode?: Mode; message: string; frames: number; delegate: string | null; running: boolean;
@@ -9,6 +9,8 @@ export interface ProbeReport {
   inferenceMsP95?: number;
   /** Latest rejection reason (qualityReason of an invalid sample), or null while samples are valid. */
   rejection?: string | null;
+  /** Frame edge the tracked points are about to leave (display coordinates), or null. */
+  edge?: Edge | null;
 }
 /** Camera ownership stays in the panel window, including while settings is closed/collapsed. */
 export class CameraProbe {
@@ -35,6 +37,8 @@ export class CameraProbe {
   private format: MediaTrackSettings = {};
   private overlay: PreviewOverlay | null = null;
   private rejection: string | null = null;
+  private edge: Edge | null = null;
+  private orientation: Orientation = DEFAULT_ORIENTATION;
   constructor(private generation: () => number, private report: (value: ProbeReport) => void, private sample: (value: TrackingSample) => void, private fault: () => void) {}
   setSelectedHand(label: HandLabel | null, confirmed = false): void {
     this.configuredHand = label; this.continuity.setSelectedHand(label, confirmed);
@@ -45,12 +49,14 @@ export class CameraProbe {
     return confirmed;
   }
   preview(canvas: HTMLCanvasElement | null): void { this.canvas = canvas; }
+  /** Camera orientation for unusual mounts; applied to anchors, overlay and preview alike. */
+  setOrientation(orientation: Orientation): void { this.orientation = { flipX: orientation.flipX, flipY: orientation.flipY }; }
   private emit(message: string, running = true): void {
     const sorted = [...this.durations].sort((a, b) => a - b);
     this.report({ mode: this.mode, message, frames: this.frame, delegate: this.delegate, running,
       selectedHand: this.continuity.selectedHand, confirmationRequired: this.continuity.confirmationRequired,
       cameraId: this.format.deviceId, width: this.format.width, height: this.format.height, frameRate: this.format.frameRate,
-      validFrames: this.validFrames, staleFrames: this.staleFrames, inferenceMsP95: sorted.length ? sorted[Math.ceil(sorted.length * 0.95) - 1] : 0, rejection: this.rejection });
+      validFrames: this.validFrames, staleFrames: this.staleFrames, inferenceMsP95: sorted.length ? sorted[Math.ceil(sorted.length * 0.95) - 1] : 0, rejection: this.rejection, edge: this.edge });
   }
   async start(cameraId: string, mode: Mode): Promise<void> {
     this.stop(); this.mode = mode;
@@ -69,7 +75,7 @@ export class CameraProbe {
       const receiveFrame: VideoFrameRequestCallback = (now, metadata) => {
         if (run !== this.run) return;
         this.progress.receive(metadata.mediaTime, now, metadata.captureTime);
-        if (this.canvas) { drawMirroredPreview(this.canvas, video); drawLandmarkOverlay(this.canvas, this.overlay, performance.now()); }
+        if (this.canvas) { drawMirroredPreview(this.canvas, video, this.orientation); drawLandmarkOverlay(this.canvas, this.overlay, performance.now()); }
         this.frameCallback = video.requestVideoFrameCallback(receiveFrame);
       };
       this.frameCallback = video.requestVideoFrameCallback(receiveFrame);
@@ -85,7 +91,8 @@ export class CameraProbe {
             if (mode === 'palm' && this.continuity.expire(performance.now())) { this.fault(); this.emit('Selected hand lost; confirm selected hand'); }
           }, 10);
         } else if (value.type === 'sample') {
-          const raw = value.sample as TrackingSample;
+          const received = value.sample as TrackingSample;
+          const raw: TrackingSample = received.anchor ? { ...received, anchor: orientPoint(received.anchor, this.orientation) } : received;
           const pending = this.pending;
           // Only the outstanding frame can release the one-frame gate.
           if (!pending || raw.frameId !== pending.frameId || raw.generation !== pending.generation || raw.captureTimestamp !== pending.timestamp) return;
@@ -106,7 +113,9 @@ export class CameraProbe {
           }
           if (output.valid) this.validFrames++;
           this.rejection = output.valid ? null : output.qualityReason;
-          this.overlay = { mode, landmarks: Array.isArray(value.landmarks) ? (value.landmarks as Landmark[]) : [], valid: output.valid, receivedAt: now };
+          const landmarks = Array.isArray(value.landmarks) ? (value.landmarks as Landmark[]) : [];
+          this.overlay = { mode, landmarks, valid: output.valid, receivedAt: now, orientation: this.orientation };
+          this.edge = edgeProximity(displayLandmarks(landmarks, this.orientation), mode);
           this.sample(output); this.emit(output.qualityReason);
         } else if (value.type === 'fault') this.fail(String(value.message));
       };
@@ -145,7 +154,7 @@ export class CameraProbe {
     this.video = null; this.frameCallback = undefined;
     this.canvas?.getContext('2d')?.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.gate = new FrameGate(); this.progress = new FrameProgress(); this.results = new SampleGate(); this.pending = null;
-    this.frame = 0; this.validFrames = 0; this.staleFrames = 0; this.durations = []; this.delegate = null; this.format = {}; this.overlay = null; this.rejection = null;
+    this.frame = 0; this.validFrames = 0; this.staleFrames = 0; this.durations = []; this.delegate = null; this.format = {}; this.overlay = null; this.rejection = null; this.edge = null;
     this.continuity.setSelectedHand(this.configuredHand, false);
   }
 }

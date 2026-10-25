@@ -63,6 +63,7 @@ export interface SteadyAPI {
   saveCalibration(calibration: CalibrationV1): Promise<void>;
   tuneCalibration(calibration: CalibrationV1): Promise<void>;
   setPanelOpacity(opacity: 1 | 0.7): Promise<void>;
+  setCameraOrientation(cameraId: string, flipX: boolean, flipY: boolean): Promise<void>;
   submitMappedProbe(sample: TrackingSample, position: Point | null): void;
   microphone(enabled: boolean): Promise<void>;
   installSpeechAssets(): Promise<void>;

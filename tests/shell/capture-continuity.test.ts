@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TrackingSample } from '../../src/shared/contracts';
-import { CONFIRM_FRESH_MS, drawLandmarkOverlay, drawMirroredPreview, HAND_LOSS_MS, rejectionHint, SampleGate, SelectedHandContinuity, type AnchorResult } from '../../src/renderer/tracking';
+import { CONFIRM_FRESH_MS, displayLandmarks, drawLandmarkOverlay, drawMirroredPreview, edgeHint, edgeProximity, HAND_LOSS_MS, LABEL_FLICKER_MS, orientPoint, rejectionHint, SampleGate, SelectedHandContinuity, type AnchorResult } from '../../src/renderer/tracking';
 
 const anchor = (x = 0.5, y = 0.5): AnchorResult => ({ valid: true, anchor: { x, y }, reason: 'valid' });
 const invalid: AnchorResult = { valid: false, anchor: null, reason: 'multiple subjects' };
@@ -12,10 +12,21 @@ describe('selected-hand continuity (synthetic, no identity claim)', () => {
     expect(hand.observe(anchor(), 'Left', 100, 100).valid).toBe(true);
     expect(hand.selectedHand).toBe('Left');
     expect(hand.observe(invalid, null, 110, 110).valid).toBe(false);
-    expect(hand.observe(anchor(), 'Right', 120, 120).reason).toBe('different hand label');
+    // A brief Right flicker (overhead camera) is the selected hand; a sustained Right is rejected.
+    expect(hand.observe(anchor(), 'Right', 120, 120).valid).toBe(true);
+    expect(hand.observe(anchor(), 'Right', 120 + LABEL_FLICKER_MS, 120 + LABEL_FLICKER_MS).reason).toBe('different hand label');
     expect(hand.selectedHand).toBe('Left');
-    expect(hand.observe(anchor(), null, 130, 130).valid).toBe(false);
-    expect(hand.observe(anchor(), 'Left', 140, 140).valid).toBe(true);
+    expect(hand.observe(anchor(), null, 430, 430).valid).toBe(false);
+    expect(hand.observe(anchor(), 'Left', 440, 440).valid).toBe(true);
+  });
+  it('label flicker tolerance still enforces the jump check and confirmation', () => {
+    const hand = new SelectedHandContinuity(); hand.observe(anchor(0.5), 'Left', 0, 0);
+    expect(hand.observe(anchor(0.51), 'Right', 30, 30).valid).toBe(true);
+    expect(hand.observe(anchor(0.8), 'Right', 60, 60).reason).toBe('hand anchor jump');
+    expect(hand.observe(anchor(0.52), 'Left', 90, 90).valid).toBe(true);
+    expect(hand.observe(anchor(0.52), 'Right', 120, 120).valid).toBe(true); // a new short run after the label recovered
+    const saved = new SelectedHandContinuity(); saved.setSelectedHand('Left');
+    expect(saved.observe(anchor(), 'Right', 10, 10).reason).toBe('different hand label'); // no prior valid anchor
   });
   it('rejects jumps exceeding .12 from the preceding valid anchor; invalids do not move that anchor', () => {
     const hand = new SelectedHandContinuity();
@@ -118,5 +129,28 @@ describe('preview overlay and hints', () => {
     expect(rejectionHint('confirm selected hand', 'palm')).toContain('press Confirm');
     expect(rejectionHint('no subject', 'head')).toBe('No face in view');
     expect(rejectionHint('valid', 'palm')).toBeNull();
+  });
+});
+
+describe('edges and orientation', () => {
+  const hand = (x: number, y: number) => Array.from({ length: 21 }, () => ({ x, y }));
+  it('warns before the palm anchor points leave the frame (display coordinates)', () => {
+    expect(edgeProximity(displayLandmarks(hand(0.5, 0.97), { flipX: false, flipY: false }), 'palm')).toBe('bottom');
+    expect(edgeProximity(displayLandmarks(hand(0.97, 0.5), { flipX: false, flipY: false }), 'palm')).toBe('left'); // mirrored once
+    expect(edgeProximity(displayLandmarks(hand(0.5, 0.97), { flipX: false, flipY: true }), 'palm')).toBe('top');
+    expect(edgeProximity(displayLandmarks(hand(0.5, 0.5), { flipX: false, flipY: false }), 'palm')).toBeNull();
+    expect(edgeHint('bottom', 'palm')).toBe('Hand is near the bottom edge — move back up a little');
+  });
+  it('orientation flips anchors and is the identity by default', () => {
+    expect(orientPoint({ x: 0.2, y: 0.3 }, { flipX: false, flipY: false })).toEqual({ x: 0.2, y: 0.3 });
+    expect(orientPoint({ x: 0.2, y: 0.25 }, { flipX: true, flipY: true })).toEqual({ x: 0.8, y: 0.75 });
+  });
+  it('preview flips match the orientation (mirror exactly once by default)', () => {
+    const context = { save: vi.fn(), translate: vi.fn(), scale: vi.fn(), drawImage: vi.fn(), restore: vi.fn() };
+    const canvas = { width: 0, height: 0, getContext: () => context } as unknown as HTMLCanvasElement;
+    const video = { videoWidth: 640, videoHeight: 480 } as HTMLVideoElement;
+    drawMirroredPreview(canvas, video, { flipX: true, flipY: true });
+    expect(context.scale).toHaveBeenCalledExactlyOnceWith(1, -1);
+    expect(context.translate).toHaveBeenCalledExactlyOnceWith(0, 480);
   });
 });
