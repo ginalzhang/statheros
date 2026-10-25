@@ -11,6 +11,7 @@ Use Node 26.12.1, npm 11.20.0, Swift 6.4, and macOS SDK 27.0. Install the pinned
 ```sh
 npm ci
 npm run setup:electron
+npm run setup:signing
 npm run assets
 npm run dev
 ```
@@ -29,6 +30,8 @@ npm run make
 ```
 
 Package before running the packaged-app end-to-end tests. Automated tests use fake input; they do not establish physical-camera, real desktop input, fullscreen, permissions, external-display, or offline inference acceptance.
+
+Run `npm run setup:signing` once per Mac before packaging. Ad-hoc builds change identity on every rebuild, so macOS silently drops the Accessibility (and Camera/Microphone) grants even though System Settings still shows Steady enabled; builds signed with the local "Steady Local Signing" certificate keep them. Without the certificate, packaging falls back to ad-hoc signing.
 
 The packaged app is `out/Steady-darwin-arm64/Steady.app`. ZIP output is `out/make/zip/darwin/arm64/Steady-darwin-arm64-0.1.0.zip`. The Swift executable and verified model/runtime files are outside ASAR under `Contents/Resources/`. See [the native helper documentation](native/README.md) for protocol and runtime details.
 
