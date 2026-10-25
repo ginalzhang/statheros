@@ -34,7 +34,7 @@ final class SystemBackend: InputBackend, @unchecked Sendable {
  @discardableResult func move(_ p:Point,dragging:Bool)->Bool{guard isReal else{return true};guard mayPost(),let event=CGEvent(mouseEventSource:nil,mouseType:dragging ? .leftMouseDragged : .mouseMoved,mouseCursorPosition:CGPoint(x:p.x,y:p.y),mouseButton:.left) else{return false};event.post(tap:.cghidEventTap);return true}
  @discardableResult func button(_ down:Bool,at p:Point)->Bool{guard isReal else{return true};guard !down || mayPost() else{return false};let point=down ? CGPoint(x:p.x,y:p.y) : (CGEvent(source:nil)?.location ?? CGPoint(x:p.x,y:p.y));guard let event=CGEvent(mouseEventSource:nil,mouseType:down ? .leftMouseDown : .leftMouseUp,mouseCursorPosition:point,mouseButton:.left) else{return false};event.post(tap:.cghidEventTap);return true}
  @discardableResult func shortcut(_ action:ActionID)->Bool{guard isReal else{return true};let key:CGKeyCode;let flags:CGEventFlags
-  switch action {case .undo:key=6;flags = .maskCommand;case .redo:key=6;flags=[.maskCommand,.maskShift];case .brush:key=11;flags=[];case .toggleErase:key=14;flags=[];case .bigger:key=30;flags=[];case .smaller:key=33;flags=[];default:return false}
+  switch action {case .undo:key=6;flags = .maskCommand;case .redo:key=6;flags=[.maskCommand,.maskShift];case .brush:key=11;flags=[];case .toggleErase:key=14;flags=[];case .bigger:key=30;flags=[];case .smaller:key=33;flags=[];case .swapColors:key=7;flags=[];default:return false}
   // Guard immediately before each down event as well as the engine's prior check.
   guard mayPost() else{return false}
   for down in [true,false]{let e=CGEvent(keyboardEventSource:nil,virtualKey:key,keyDown:down);e?.flags=flags;e?.post(tap:.cghidEventTap)}

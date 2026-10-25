@@ -165,7 +165,7 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     await sample(outside);current=await page.evaluate(()=>window.steady.status());expect(current.native?.state).toBe('HOVER');expect(current.native?.buttonDown).toBe(false);
     await sample(inside);expect((await page.evaluate(()=>window.steady.status())).native?.buttonDown).toBe(false);
     await page.evaluate(()=>window.steady.action('click'));
-    for(const action of ['undo','redo','brush','toggleErase','bigger','smaller'] as const)await page.evaluate(action=>window.steady.action(action),action);
+    for(const action of ['undo','redo','brush','toggleErase','bigger','smaller','swapColors'] as const)await page.evaluate(action=>window.steady.action(action),action);
     await page.evaluate(()=>window.steady.action('penDown'));
     const panelPoint=await app.evaluate(({BrowserWindow})=>{const bounds=BrowserWindow.getAllWindows().find(win=>new URL(win.webContents.getURL()).searchParams.get('view')==='panel')!.getBounds();return {x:bounds.x+10,y:bounds.y+10};});
     await sample(panelPoint);current=await page.evaluate(()=>window.steady.status());expect(current.native?.state).toBe('HOVER');expect(current.native?.buttonDown).toBe(false);

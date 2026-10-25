@@ -7,13 +7,15 @@ import type { ActionID } from '../../shared/contracts';
 const VOCABULARY: Record<string, ActionID> = {
   'pen down': 'penDown', 'pen up': 'penUp', 'pen toggle': 'penToggle', click: 'click', undo: 'undo', redo: 'redo',
   brush: 'brush', 'toggle erase': 'toggleErase', eraser: 'toggleErase', erase: 'toggleErase', bigger: 'bigger', smaller: 'smaller',
+  'swap colors': 'swapColors', 'swap color': 'swapColors', 'tremor filter': 'tremorFilter',
   pause: 'pause', resume: 'resume', recenter: 'recenter', 're center': 'recenter', 'mark corner': 'markCorner',
   'microphone off': 'microphoneOff', 'mic off': 'microphoneOff',
 };
 export const VOICE_LABELS: Record<ActionID, string> = {
   penDown: 'Pen down', penUp: 'Pen up', penToggle: 'Pen toggled', click: 'Clicked', undo: 'Undone', redo: 'Redone', brush: 'Brush',
   toggleErase: 'Eraser toggled', bigger: 'Bigger brush', smaller: 'Smaller brush', pause: 'Paused', resume: 'Resumed',
-  recenter: 'Recentering', markCorner: 'Corner marked', microphoneOff: 'Microphone off',
+  recenter: 'Recentering', markCorner: 'Corner marked', microphoneOff: 'Microphone off', swapColors: 'Colors swapped',
+  tremorFilter: 'Tremor filter toggled',
 };
 // Longest first, so "toggle erase" wins over "erase" and "pen down" is one mention.
 const PHRASES = Object.keys(VOCABULARY).map(phrase => phrase.split(' ')).sort((a, b) => b.length - a.length);

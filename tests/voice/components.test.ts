@@ -188,6 +188,9 @@ describe('Steady voice vocabulary', () => {
     expect(parseSteadyCommand('make it a bit bigger')).toBe('bigger');
     expect(parseSteadyCommand('mic off')).toBe('microphoneOff');
     expect(parseSteadyCommand('undo, undo')).toBe('undo');
+    expect(parseSteadyCommand('swap colors')).toBe('swapColors');
+    expect(parseSteadyCommand('swap color please')).toBe('swapColors');
+    expect(parseSteadyCommand('turn on the tremor filter')).toBe('tremorFilter');
   });
   it('rejects no command or more than one', () => {
     expect(parseSteadyCommand('a cartesia')).toBeNull();
@@ -200,6 +203,13 @@ describe('Steady voice vocabulary', () => {
 });
 
 describe('keyword labels', () => {
+  it('maps every spotter command label onto a vocabulary command', () => {
+    const labels = readFileSync(path.resolve('resources/voice/keywords_raw.txt'), 'utf8').match(/@\w+/g)!.map(label => label.slice(1));
+    for (const label of new Set(labels)) {
+      const meaning = keywordMeaning(label);
+      if (meaning.kind === 'command') expect(parseSteadyCommand(meaning.text), label).not.toBeNull();
+    }
+  });
   it('maps spotter labels to wake, stop or a command phrase', () => {
     expect(keywordMeaning('HEY_CARTESIA')).toEqual({ kind: 'wake' });
     expect(keywordMeaning('STOP')).toEqual({ kind: 'stop' });

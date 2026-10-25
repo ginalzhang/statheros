@@ -16,6 +16,7 @@ const MEANINGS: Record<ActionID, string> = {
   brush: 'switch to the brush tool', toggleErase: 'toggle eraser mode on/off', bigger: 'make the brush bigger',
   smaller: 'make the brush smaller', pause: 'pause head/hand tracking', resume: 'resume head/hand tracking',
   recenter: 'recalibrate the neutral position', markCorner: 'mark a canvas corner', microphoneOff: 'turn the microphone off',
+  swapColors: 'swap the foreground and background colors', tremorFilter: 'toggle the heavy tremor-smoothing stroke mode on/off',
 };
 const SYSTEM = `You turn one short spoken request from an artist drawing in Krita with Steady (hands-free head/hand tracking) into exactly one Steady action.
 Actions:

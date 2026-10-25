@@ -202,7 +202,7 @@ private func accepted(_ e:Envelope)->Bool{e.payload.object?["accepted"]?.bool==t
 
 @Test func pausedTargetShortcutsAreAllowedButMovementAndClicksAreBlocked() {
  let h=Harness();h.sample(1,1000);let count=h.backend.positions.count
- for a in [ActionID.undo,.redo,.brush,.toggleErase,.bigger,.smaller] {#expect(accepted(h.action(a,now:1000)))}
+ for a in [ActionID.undo,.redo,.brush,.toggleErase,.bigger,.smaller,.swapColors] {#expect(accepted(h.action(a,now:1000)))}
  #expect(h.backend.positions.count==count);#expect(!accepted(h.action(.click,now:1000)));#expect(!h.backend.events.contains("down"))
  h.backend.foregroundBundle="org.other";#expect(!accepted(h.action(.undo)));#expect(h.engine.snapshot.state == .paused)
 }

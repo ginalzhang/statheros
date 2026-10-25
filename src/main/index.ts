@@ -23,6 +23,7 @@ import { deliverCommand } from './command-delivery';
 import { SettingsStore } from './settings';
 import { defaultSettings, withCalibration } from '../shared/settings';
 import { isCalibrationV1 } from '../renderer/engine';
+import { STROKE_PRESETS } from '../renderer/stroke-presets';
 import { ElectronVoice } from './voice/electron-voice';
 import { dispatchVoiceCommand } from './voice/command-dispatch';
 import { anthropicKey, createIntentClient, interpretIntent, type IntentClient } from './voice/intent';
@@ -365,6 +366,7 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
   stopLiveProbe();
   switch (actionId) {
     case 'microphoneOff': await microphone(false); return null;
+    case 'tremorFilter': await toggleTremorFilter(); return null;
     case 'openSettings': await openSettings(); return null;
     case 'togglePanel': await collapsePanel(!status.collapsed); return null;
     case 'quit': app.quit(); return null;
@@ -439,12 +441,25 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
     await supervisor.request('action',{generation,eventId:randomUUID(),actionId:'penUp'});
     throw new Error('Close Settings before pointer actions.');
   }
-  if (['resume','penDown','penToggle','click','undo','redo','brush','toggleErase','bigger','smaller'].includes(actionId) && !fixedKritaProfile()) {
+  if (['resume','penDown','penToggle','click','undo','redo','brush','toggleErase','bigger','smaller','swapColors'].includes(actionId) && !fixedKritaProfile()) {
     await supervisor.request('action', { generation, eventId: randomUUID(), actionId: 'penUp' });
     throw new Error('Generic shortcut profiles are unverified configuration previews. Select the fixed Krita profile to execute.');
   }
   const ack = await supervisor.request('action', { generation, eventId, actionId: actionId as ActionID });
   status.fault = null; publish(); return ack;
+}
+/** Voice "tremor filter": switch to the Tremor Filter stroke mode's smoothing, or back to the smoothing used before it. Sensitivity is kept. */
+let smoothingBeforeTremor: number | null = null;
+async function toggleTremorFilter(): Promise<void> {
+  const tremor = STROKE_PRESETS.find(preset => preset.id === 'tremor')!.smoothing, steady = STROKE_PRESETS.find(preset => preset.id === 'steady')!.smoothing;
+  const current = savedSettings.calibrations.find(c => c.cameraId === savedSettings.cameraId && c.mode === savedSettings.mode);
+  if (!current) throw new Error('Calibrate before choosing a stroke mode.');
+  const on = current.smoothing !== tremor;
+  const smoothing = on ? tremor : smoothingBeforeTremor ?? steady;
+  smoothingBeforeTremor = on ? current.smoothing : null;
+  // As with panel tuning, release a held pen so the mapping change can never extend a stroke.
+  if (status.native?.buttonDown) await supervisor?.request('action', { generation, eventId: randomUUID(), actionId: 'penUp' });
+  savedSettings = withCalibration(savedSettings, { ...current, smoothing }); settingsStore.save(savedSettings); status.settings = savedSettings; publish();
 }
 async function collapsePanel(collapsed: boolean): Promise<void> {
   status.collapsed = collapsed; panel?.setSize(PANEL_WIDTH, collapsed ? PANEL_COLLAPSED_HEIGHT : PANEL_HEIGHT, false); buttons = [];
