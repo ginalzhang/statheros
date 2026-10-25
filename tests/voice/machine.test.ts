@@ -651,3 +651,21 @@ describe('errors, timers and invariants', () => {
     expect(h.ctx.bargeIn).toBe(false);
   });
 });
+
+describe('capture failures', () => {
+  it('logs the reason and mutes with a reason-specific toast', () => {
+    const cases: [string, RegExp][] = [
+      ['denied', /permission needed/], ['NotAllowedError: Permission denied', /permission needed/],
+      ['silent input', /tccutil reset Microphone/], ['NotFoundError: Requested device not found', /No microphone found/],
+      ['NotReadableError: Could not start audio source', /busy or unavailable/], ['AbortError: worklet failed', /Couldn't open the microphone \(AbortError: worklet failed\)/],
+    ];
+    for (const [reason, toast] of cases) {
+      const h = new Harness();
+      h.send({ type: 'CaptureFailed', reason });
+      expect(h.state).toBe('MUTED');
+      expect(h.ctx.mutedReason).toBe('permission');
+      expect(h.toasts()).toEqual([expect.stringMatching(toast)]);
+      expect(h.find('Log')[0]?.fields).toMatchObject({ captureFailed: reason });
+    }
+  });
+});
