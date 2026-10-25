@@ -181,5 +181,14 @@ describe('Steady voice vocabulary', () => {
     expect(parseSteadyCommand('microphone off')).toBe('microphoneOff');
     expect(parseSteadyCommand('put the pen down')).toBeNull();
     expect(parseSteadyCommand('undo redo')).toBeNull();
+    // A misheard wake phrase ("hey cartesia" → "here okay") may precede the command after a wake detection only.
+    expect(parseSteadyCommand('Here okay, undo.', 'wake')).toBe('undo');
+    expect(parseSteadyCommand('okay pen down', 'wake')).toBe('penDown');
+    expect(parseSteadyCommand('here okay steady undo', 'wake')).toBe('undo');
+    expect(parseSteadyCommand('here okay undo')).toBeNull();
+    expect(parseSteadyCommand('here okay undo', 'ptt')).toBeNull();
+    expect(parseSteadyCommand('one two three undo', 'wake')).toBeNull();
+    expect(parseSteadyCommand('undo redo', 'wake')).toBeNull();
+    expect(parseSteadyCommand('pen up down', 'wake')).toBeNull();
   });
 });

@@ -128,7 +128,9 @@ export class ElectronVoice {
   private async openCapture(): Promise<void> {
     if (process.platform === 'darwin') {
       let status = systemPreferences.getMediaAccessStatus('microphone');
+      const initial = status;
       if (status === 'not-determined') status = (await systemPreferences.askForMediaAccess('microphone')) ? 'granted' : 'denied';
+      this.log('info', { micAccess: status, ...(initial !== status ? { micAccessBefore: initial } : {}) });
       if (status === 'denied' || status === 'restricted') { this.runtime?.post({ type: 'CaptureFailed', reason: status }); return; }
     }
     // The user may have muted while the permission prompt was up.

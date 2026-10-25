@@ -206,7 +206,7 @@ async function microphone(enabled: boolean): Promise<void> {
 /** <<COMMAND_ENTRYPOINT>> for voice: the shared dispatcher, resolving after the native ack. */
 async function executeVoiceCommand(command: CommandEvent): Promise<string | null> {
   if (command.kind === 'dictation') throw new Error("Dictation isn't available in Steady");
-  const action = parseSteadyCommand(command.text);
+  const action = parseSteadyCommand(command.text, command.source);
   if (!action) throw new Error(`“${command.text.slice(0, 40)}” isn't a Steady command`);
   await enqueueAction(action);
   return VOICE_LABELS[action];
