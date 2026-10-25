@@ -115,8 +115,7 @@ function App(): React.JSX.Element {
     setupRef.current?.update(status.settings, status.displays.find(d => d.id === status.selectedDisplayId), status.generation);
     probeRef.current?.preview(previewRef.current);
     probeRef.current?.setOrientation(orientationFor(status.settings, status.settings?.cameraId ?? ''));
-    const gesture = penGestureFor(status.settings, status.settings?.cameraId ?? '');
-    probeRef.current?.setPenGesture(gesture && status.settings?.mode === 'palm' ? gesture : null);
+    probeRef.current?.setPenGesture(null); // rest/lift retired: the pen lifts when the hand holds still
   }, [isSettings, status]);
 
   useEffect(() => window.steady.onLocalAction(id => {
@@ -224,7 +223,6 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
           <button data-action="penDown" aria-pressed={penDown} className={!penDown && status.penArmed ? 'armed' : undefined} onClick={() => action('penDown')}>{!penDown && status.penArmed ? 'Pen Down · armed' : 'Pen Down'}</button>
         </div>
         {!penDown && status.penArmed && <p className="secondary" role="status">Armed: the pen goes down when your hand moves into the canvas.</p>}
-        {palm && penGestureFor(status.settings, status.settings?.cameraId ?? '')?.enabled && <p className="secondary">Rest hand = pen down · lift hand = pen up</p>}
       </section>
       <section className="panel-section" aria-labelledby="stroke-title">
         <h2 id="stroke-title">Stroke Assistance</h2>
@@ -427,7 +425,6 @@ function Settings({ status, probe, setup, feedback, run, channel, voice }: { sta
       <label>Camera<select value={cameraId} onChange={event => { stop(); setCameraId(event.target.value); run(() => window.steady.selectCamera(event.target.value, mode)); }}><option value="">Default camera</option>{cameras.map((camera, index) => <option key={camera.deviceId || index} value={camera.deviceId}>{camera.label || `Camera ${index + 1}`}</option>)}</select></label>
       <div className="settings-actions"><button onClick={start}>Start camera probe</button><button onClick={stop}>Stop camera probe</button><button onClick={refresh}>Refresh cameras</button></div>
       <Orientation status={status} run={run} />
-      <PenGestureSettings status={status} probe={probe} mode={mode} run={run} send={send} />
       <p role="status">{probe.message} · {probe.frames} frames{probe.delegate ? ` · ${probe.delegate}` : ''}</p>
       <p>Actual: {probe.width ?? '—'}×{probe.height ?? '—'} at {probe.frameRate ?? '—'} fps · valid {probe.validFrames ?? 0} · stale {probe.staleFrames ?? 0} · inference p95 {probe.inferenceMsP95?.toFixed(1) ?? '—'} ms</p>
       <p>Selected model hand: {probe.selectedHand ?? 'none'} · {probe.confirmationRequired ? 'Confirmation required after loss' : 'Continuity accepted'}. This is a conservative continuity heuristic.</p>

@@ -348,7 +348,18 @@ function pointerInCanvas(): boolean {
   return Boolean(position && canvas && containsPoint(canvas, position) && !(bounds && containsPoint(bounds, position)));
 }
 function penContext() { return { native: supervisor?.state?.state, buttonDown: Boolean(supervisor?.state?.buttonDown), inCanvas: pointerInCanvas() }; }
-function penGestureEnabled(): boolean { return savedSettings.mode === 'palm' && Boolean(savedSettings.penGestures?.find(entry => entry.cameraId === savedSettings.cameraId)?.enabled); }
+// The rest/lift gesture is retired in favor of lifting when still; saved gesture settings are ignored.
+function penGestureEnabled(): boolean { return false; }
+/** Holding still with the pen down lifts it, before Krita's press-and-hold color sampler can fire. */
+const STILL_LIFT_MS = 400, STILL_RADIUS = 4;
+let stillAnchor: { position: Point; since: number } | null = null;
+function liftWhenStill(position: Point, now: number): void {
+  if (!supervisor?.state?.buttonDown) { stillAnchor = null; return; }
+  if (!stillAnchor || Math.hypot(position.x - stillAnchor.position.x, position.y - stillAnchor.position.y) > STILL_RADIUS) { stillAnchor = { position, since: now }; return; }
+  if (now - stillAnchor.since < STILL_LIFT_MS) return;
+  stillAnchor = null;
+  void enqueueAction('penUp').then(() => publishPen('Held still: pen up. Say "pen down" to keep drawing.')).catch(error => fault(String(error)));
+}
 function publishPen(message?: string): void { status.penArmed = pen.armed; if (message !== undefined) status.fault = message; publish(); }
 /** Armed pen: press as soon as the tracked pointer is inside the canvas (native rules still apply). */
 function engageArmedPen(): void {
@@ -784,6 +795,7 @@ function installIPC(): void {
     pointer = sample.valid ? { position: position as Point, timestamp: sample.captureTimestamp, generation } : null;
     if(supervisor?.state?.generation===generation)supervisor.submit(sample, sample.valid ? position as Point : null, sample.captureTimestamp);
     if(sample.valid&&pen.armed)engageArmedPen();
+    if(sample.valid)liftWhenStill(position as Point,performance.now());
   });
   // Rest/lift gesture (opt-in): rest arms the pen (it presses inside the canvas only); lift releases.
   ipcMain.on('steady:pen-gesture',(event,state:unknown,gestureGeneration:unknown)=>{
