@@ -1,4 +1,4 @@
-# Steady (Statheros)
+# Statheros
 
 **Voice commands:** explicitly enable Voice Commands, then just talk. Command words (“pen down”, “eraser”) run on-device at once (sherpa-onnx). Anything else you say streams to Cartesia Ink while the red cloud dot shows, and is read by Claude when an Anthropic key is configured (“I want to rub that out” → eraser). ⌘⇧Space push-to-talk also works. There is no wake word. See [docs/voice/README.md](docs/voice/README.md). **UI:** the companion panel follows the Statheros Figma design ([docs/design](docs/design/IMPLEMENTATION.md)).
 
