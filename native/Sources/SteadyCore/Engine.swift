@@ -3,6 +3,7 @@ import Foundation
 public protocol InputBackend: AnyObject, Sendable {
  var isReal:Bool {get}
  func setTarget(pid:Int32)
+ @discardableResult func restoreTarget(pid:Int32)->Bool
  func kritaPid()->Int32?
  func permissions()->Permissions
  func foreground()->(bundle:String,pid:Int32)?
@@ -24,6 +25,7 @@ public final class FakeBackend: InputBackend, @unchecked Sendable {
  public var displayInfos=[DisplayInfo(id:1,bounds:Rect(x:-1200,y:0,width:1200,height:900),workArea:Rect(x:-1200,y:24,width:1200,height:876),builtIn:true,primary:true,scaleFactor:2)]
  public init(realFlag:Bool=false){isReal=realFlag}
  public func setTarget(pid:Int32){}
+ @discardableResult public func restoreTarget(pid:Int32)->Bool{guard pid==kritaPid() else{return false};foregroundBundle="org.krita";foregroundPid=pid;return true}
  public func kritaPid()->Int32?{foregroundBundle=="org.krita" ? foregroundPid : 123}
  private func reportRead(){let callback=lock.withLock{reportReads+=1;let callback=beforeNextMetadataRead;beforeNextMetadataRead=nil;return callback};callback?()}
  public func permissions()->Permissions{reportRead();return Permissions(accessibility:accessibility,camera:"fake",microphone:"fake",speech:"fake")}
@@ -109,7 +111,8 @@ public final class NativeEngine: @unchecked Sendable {
  public func event(type:String,payload:JSONValue)->Envelope?{lock.withLock{guard let session else{return nil};responseSeq+=1;return Envelope(session:session,seq:responseSeq,type:type,payload:payload)}}
  public func handle(_ req:Envelope,now:Double)->Envelope {
   if req.type != "ping" && req.type != "sample" {refreshMetadata()}
-  return lock.withLock{
+  var restorePid:Int32?
+  var response=lock.withLock{
   guard !closed else{return reply(req,accepted:false,code:"closed",now:now)}
   if session == nil {
    guard req.type=="hello" else{return reply(req,accepted:false,code:"hello-required",now:now)}
@@ -121,7 +124,7 @@ public final class NativeEngine: @unchecked Sendable {
   let p=req.payload.object ?? [:]
   if req.type=="hello" {
    guard req.seq==0 || responseSeq==0 else{return reply(req,accepted:false,code:"already-hello",now:now)}
-   return reply(req,accepted:true,code:"hello",now:now,extra:["protocolVersion":.number(1),"displays":.encoded(reportedDisplays),"targetPid":discoveredTargetPid.map{.number(Double($0))} ?? .null,"capabilities":.array([.string(backend.isReal ? (boundedProbe ? "bounded-real-input" : "real-input") : "fake-input"),.string("voice-deferred-phase01"),.string("watchdog-10ms")])])
+   return reply(req,accepted:true,code:"hello",now:now,extra:["protocolVersion":.number(1),"displays":.encoded(reportedDisplays),"targetPid":discoveredTargetPid.map{.number(Double($0))} ?? .null,"capabilities":.array([.string(backend.isReal ? (boundedProbe ? "bounded-real-input" : "real-input") : "fake-input"),.string("voice-deferred-phase01"),.string("watchdog-10ms"),.string("canvas-accessibility")])])
   }
   var resultCode="ok"
   switch req.type {
@@ -162,6 +165,11 @@ public final class NativeEngine: @unchecked Sendable {
    events.insert(event)
    let code=perform(action,now:now)
    if code != "ok" {return reply(req,accepted:false,code:code,now:now)}
+  case "restoreTarget":
+   guard let pid=p["targetPid"]?.uint,pid>0,pid<=UInt64(Int32.max),Int32(pid)==discoveredTargetPid else{return reply(req,accepted:false,code:"target-unavailable",now:now)}
+   guard release() else{return reply(req,accepted:false,code:"native-release-failed",now:now)}
+   state.state = state.state == .fault ? .fault : .paused;validSince=nil
+   restorePid=Int32(pid);resultCode="target-activation-requested"
   case "ping":return reply(req,accepted:true,code:"pong",now:now,extra:["senderTimestamp":p["senderTimestamp"] ?? .null,"displays":.encoded(reportedDisplays),"targetPid":discoveredTargetPid.map{.number(Double($0))} ?? .null])
   case "microphone":
    // User deferred voice to Phase 04. Reject before Main can invoke TCC,
@@ -173,7 +181,13 @@ public final class NativeEngine: @unchecked Sendable {
   default:return reply(req,accepted:false,code:"type",now:now)
   }
   return reply(req,accepted:true,code:resultCode,now:now)
- }}
+  }
+  // App activation may involve platform IPC; never hold the freshness/input lock.
+  if let restorePid,!backend.restoreTarget(pid:restorePid),var payload=response.payload.object {
+   payload["accepted"] = .bool(false);payload["code"] = .string("target-activation-failed");response.payload = .object(payload)
+  }
+  return response
+ }
  private func perform(_ a:ActionID,now:Double)->String {
   switch a {
   case .pause,.penUp:guard release() else{return "native-release-failed"};state.state = a == .pause ? (state.state == .fault ? .fault : .paused) : (state.state == .drawing ? .hover : state.state);state.reason=a.rawValue;validSince = a == .pause ? nil : validSince;return "ok"

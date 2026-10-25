@@ -17,6 +17,7 @@ final class SystemBackend: InputBackend, @unchecked Sendable {
   switch SFSpeechRecognizer.authorizationStatus(){case .authorized:speech="authorized";case .denied:speech="denied";case .restricted:speech="restricted";case .notDetermined:speech="notDetermined";@unknown default:speech="unknown"}
   return Permissions(accessibility:AXIsProcessTrusted(),camera:status(AVCaptureDevice.authorizationStatus(for:.video)),microphone:status(AVCaptureDevice.authorizationStatus(for:.audio)),speech:speech)
  }
+ @discardableResult func restoreTarget(pid:Int32)->Bool {guard let app=NSRunningApplication(processIdentifier:pid),app.bundleIdentifier=="org.krita",!app.isTerminated else{return false};return app.activate(options:[])}
  func kritaPid()->Int32? {NSRunningApplication.runningApplications(withBundleIdentifier:"org.krita").first?.processIdentifier}
  func foreground()->(bundle:String,pid:Int32)? {guard let app=NSWorkspace.shared.frontmostApplication,let bundle=app.bundleIdentifier else{return nil};return(bundle,app.processIdentifier)}
  func displays()->[DisplayInfo] {

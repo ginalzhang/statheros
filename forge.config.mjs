@@ -10,7 +10,7 @@ export default {
       NSCameraUsageDescription: 'Steady uses your selected camera for local head or palm tracking.',
       NSMicrophoneUsageDescription: 'Steady recognizes explicitly enabled local drawing commands.',
       NSSpeechRecognitionUsageDescription: 'Steady recognizes local en-US drawing commands.',
-      NSAccessibilityUsageDescription: 'Steady posts pointer and key events to Krita when explicitly enabled.'
+      NSAccessibilityUsageDescription: 'Steady reads Krita window geometry and posts pointer and key events when explicitly enabled.'
     }
   },
   makers: [new MakerZIP({}, ['darwin'])],

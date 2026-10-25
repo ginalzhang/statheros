@@ -55,6 +55,7 @@ private func steadyDisplayChanged(_ display:CGDirectDisplayID,_ flags:CGDisplayC
    writer.diagnostic("Open a disposable Krita document, keep Krita foreground, then send one line: CONFIRM_DISPOSABLE_KRITA. Probe is bounded to 15 seconds; mouse-up is always attempted.")
    await runProbe(engine:engine,writer:writer,logFake:logFake);withExtendedLifetime(metadata){};logFake();return
   }
+  let canvasMonitor=CanvasAccessibility(engine:engine,fake:fakeTest){observation in writer.event{engine.event(type:"canvasObservation",payload:observation.json)}}
   let speech=SpeechProbe(output:{p in writer.event{engine.event(type:"speech",payload:p)}},fault:{message in writer.event{engine.event(type:"fault",payload:.object(["code":.string(message),"message":.string(message)]))}},diagnostics:{value in if let data=try? JSONEncoder().encode(value){writer.diagnostic("steady-speech-probe:"+String(decoding:data,as:UTF8.self))}})
   let parserQueue=DispatchQueue(label:"org.steady.native.protocol",qos:.userInitiated)
   let watchdogQueue=DispatchQueue(label:"org.steady.native.watchdog",qos:.userInteractive)
@@ -84,7 +85,7 @@ private func steadyDisplayChanged(_ display:CGDirectDisplayID,_ flags:CGDisplayC
     if accepted,request.type=="shutdown"{Task{@MainActor in await speech.stop();exit(0)}}
    }}catch {writer.response{engine.faultReply(session:"00000000-0000-4000-8000-000000000000",code:"protocol-invalid")};engine.disconnect();logFake();exit(3)}
   };source.resume()
-  while !Task.isCancelled {try? await Task.sleep(for:.seconds(30));withExtendedLifetime((source,timer,term,interrupt,metadata)) {}}
+  while !Task.isCancelled {try? await Task.sleep(for:.seconds(30));withExtendedLifetime((source,timer,term,interrupt,metadata,canvasMonitor)) {}}
  }
  private static func readConfirmation()->Bool{
   let deadline=monotonicMilliseconds()+15_000;var bytes:[UInt8]=[]

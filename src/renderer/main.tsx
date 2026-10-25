@@ -5,6 +5,7 @@ import { ALL_CONTROLS, defaultBindings, kritaProfile, type GlobalBindings, type 
 import { CameraProbe, type ProbeReport } from './probe';
 import './style.css';
 import { SetupController, type SetupSnapshot } from './setup-controller';
+import { CanvasOutline, CanvasOverlay } from './canvas-overlay';
 
 const initialStatus: ProbeStatus = { native: null, displays: [], fault: null, collapsed: false, settingsOpen: false, generation: 0, realInput: false, microphoneEnabled: false };
 const initialProbe: ProbeReport = { message: 'Camera off', frames: 0, delegate: null, running: false };
@@ -149,9 +150,11 @@ function App(): React.JSX.Element {
       {setup?.position && <p>Mapped probe: {Math.round(setup.position.x)}, {Math.round(setup.position.y)}</p>}
       {probe.confirmationRequired && <button data-action="confirmHand" onClick={() => action('confirmHand')}>Confirm selected hand</button>}
       <p role="status">{status.canvasSetup?.message ?? (status.canvasConfirmed ? 'Canvas confirmed · Resume required' : 'Canvas confirmation required')}</p>
-      <div className="settings-actions"><button data-action="beginCanvas" onClick={() => action('beginCanvas')}>Set canvas</button><button data-action="cancelCanvas" onClick={() => action('cancelCanvas')} disabled={!status.canvasSetup?.active}>Cancel canvas</button></div>
+      <div className="settings-actions"><button data-action="beginCanvas" onClick={() => action('beginCanvas')}>Detect canvas</button>{status.canvasSetup?.workspaceSuggestion && <button data-action="reviewWorkspace" onClick={() => action('reviewWorkspace')}>Review suggested workspace</button>}<button data-action="selectCanvas" onClick={() => action('selectCanvas')}>Select with mouse</button><button data-action="cancelCanvas" onClick={() => action('cancelCanvas')} disabled={!status.canvasSetup?.active}>Cancel canvas</button></div>
+      <CanvasDetectionStatus status={status} />
+      <details className="advanced-canvas"><summary>Advanced canvas setup</summary><p>Use tracking and F8 to mark corners.</p><button data-action="beginLegacyCanvas" onClick={() => action('beginLegacyCanvas')}>Mark corners with tracking</button></details>
       <div className="actions">{actionLabels.map(([id, label]) => <button key={id} data-action={id} onClick={() => action(id)}>{label}</button>)}</div>
-      <p className="hint">F8: {status.canvasSetup?.active ? 'mark corner' : 'pen toggle'} · F9: pause<br />Use Fn with function keys if macOS requires it. Voice is deferred. Confirm calibration and canvas before Resume.</p>
+      <p className="hint">F8: {status.canvasSetup?.mode === 'legacy' && status.canvasSetup.active ? 'mark corner' : 'pen toggle'} · F9: pause<br />Use Fn with function keys if macOS requires it. Voice is deferred. Confirm calibration and canvas before Resume.</p>
     </div>}
   </main>;
 }
@@ -217,7 +220,7 @@ function Settings({ status, probe, setup, feedback, run, channel }: { status: Pr
         <label>Smoothing<input aria-label="Smoothing" type="range" min="0" max="100" value={setup.calibration.smoothing} onChange={event => send('tuning', { gain: setup.calibration!.gain, smoothing: Number(event.target.value) })} /></label><p>Smoothing {setup.calibration.smoothing}; min cutoff {(4 - .034 * setup.calibration.smoothing).toFixed(2)} Hz, beta 1, derivative cutoff 1 Hz.</p>
       </>}
       <div className="mapping-preview" aria-label="Mapped pointer probe">{setup?.position && (() => { const bounds = status.displays.find(d => d.id === status.selectedDisplayId)?.bounds; return bounds && <span style={{ left: `${100 * (setup.position.x - bounds.x) / bounds.width}%`, top: `${100 * (setup.position.y - bounds.y) / bounds.height}%` }} />; })()}</div>
-      <p>Camera/mode changes and recentering release input and leave it paused. Mark the canvas after calibration; remap whenever the Krita document area moves or changes size.</p>
+      <p>Camera/mode changes and recentering release input and leave it paused. Canvas detection and mouse selection are available without camera capture or calibration; drawing still requires calibration and Resume.</p>
     </section>
     <section aria-labelledby="baseline-heading">
       <h2 id="baseline-heading">Tracking performance baseline</h2>
@@ -255,11 +258,43 @@ function Settings({ status, probe, setup, feedback, run, channel }: { status: Pr
 }
 
 
+function CanvasDetectionStatus({ status }: { status: ProbeStatus }): React.JSX.Element {
+  const [copying, setCopying] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<{ message: string; error: boolean } | null>(null);
+  const report = status.canvasDiagnostics;
+  const diagnostics = report?.current?.diagnostics;
+  const copyDiagnostics = (): void => {
+    if (copying || !report?.current) return;
+    setCopying(true); setCopyFeedback(null);
+    void window.steady.copyCanvasDiagnostics().then(() => {
+      setCopyFeedback({ message: 'Canvas diagnostics copied. You can paste them into the chat.', error: false });
+    }).catch(cause => {
+      setCopyFeedback({ message: `Could not copy canvas diagnostics: ${String(cause)}`, error: true });
+    }).finally(() => setCopying(false));
+  };
+  return <div className="canvas-detection-status">
+    {status.canvasSetup?.detection && <p role="status">{status.canvasSetup.detection.reason}</p>}
+    {status.canvasSetup?.source === 'viewport' && <p>Using the drawing viewport, which may include gray workspace around the document.</p>}
+    {status.canvasSetup?.source === 'manual' && <p>Manual bounds stay fixed on screen. Select again after zooming or panning when those changes cannot be observed.</p>}
+    {status.canvasSetup?.workspaceSuggestion && <p>A suggested workspace is available for review. It may include document tabs, rulers, or scrollbars. Choose Review suggested workspace on the panel to inspect it or drag a replacement before Use canvas.</p>}
+    {status.canvasSetup?.detection?.availability === 'unavailable' && <p>Use Select with mouse to choose the canvas. No screen capture or Krita plugin is used.</p>}
+    <details className="canvas-diagnostics">
+      <summary>Canvas diagnostics</summary>
+      <p>Copy window geometry and Accessibility structure to help troubleshoot detection or unexpected canvas changes. The report contains no screenshots or document text.</p>
+      {diagnostics && <p>{diagnostics.inspected} elements inspected{diagnostics.complete ? '; search complete' : '; search incomplete'}{diagnostics.truncated ? '; structural sample limited' : ''}.</p>}
+      {report?.lastInvalidation && <p>Last canvas change: {report.lastInvalidation.reason}</p>}
+      <button onClick={copyDiagnostics} disabled={copying || !report?.current}>{copying ? 'Copying…' : 'Copy canvas diagnostics'}</button>
+      {!report?.current && <p>Waiting for canvas observations before diagnostics can be copied.</p>}
+      {copyFeedback && <p role={copyFeedback.error ? 'alert' : 'status'} className={copyFeedback.error ? 'error' : undefined}>{copyFeedback.message}</p>}
+    </details>
+  </div>;
+}
+
 function DrawingSetup({ status, run }: { status: ProbeStatus; run: (work: () => Promise<void>) => void }): React.JSX.Element {
   const [confirmed, setConfirmed] = useState(false);
   return <section aria-labelledby="drawing-heading">
     <h2 id="drawing-heading">Krita drawing and canvas</h2>
-    <p>Prepare a disposable Krita 5.3.4 document. Native control requires Accessibility permission. Steady never switches applications for you. Text entry and modal dialogs are handled while paused.</p>
+    <p>Prepare a disposable Krita 5.3.4 document. Native control requires Accessibility permission. Mouse selection shows controls at the Steady panel's location while an overlay captures selection clicks, and returns focus to Krita when it closes. Handle text entry and modal dialogs while paused.</p>
     <label className="confirmation"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I have a disposable Krita document ready for real pointer input</label>
     <div className="settings-actions">
       <button disabled={!confirmed || status.realInput} onClick={() => run(async () => { await window.steady.setRealInput(true); setConfirmed(false); })}>Enable real input</button>
@@ -268,10 +303,11 @@ function DrawingSetup({ status, run }: { status: ProbeStatus; run: (work: () => 
       <button onClick={() => run(() => window.steady.releaseInput())}>Emergency pause / release</button>
     </div>
     <p role="status">{status.canvasSetup?.message ?? (status.canvasConfirmed ? 'Canvas confirmed; Resume is required.' : 'Canvas confirmation required each launch.')}</p>
-    <p>Complete calibration and select a display. Close Settings, switch to Krita, then choose Set canvas on the companion panel or use a configured Set canvas binding. Hover at the top-left corner and press F8, then hover at the bottom-right and press F8 again. Corners must form at least 100 × 100 logical points and exclude this panel. Capture always ends paused. Move the panel first if it overlaps the desired canvas.</p>
+    <p>Select a display, close Settings, and switch to Krita. Choose Detect canvas or Select with mouse on the companion panel. If a workspace suggestion is available, close Settings and choose Review suggested workspace on the panel. Inspect the highlight, which may include tabs, rulers, or scrollbars, or drag to replace it before Use canvas. For mouse selection, drag in either direction, review the rectangle, then Use canvas. Retry clears it for redrawing; Cancel or Escape leaves input paused. The rectangle must be at least 100 × 100 logical points and exclude this panel.</p>
+    <CanvasDetectionStatus status={status} />
     <div className="settings-actions"><button onClick={() => run(() => window.steady.closeSettings())}>Close settings to set canvas</button><button disabled={!status.canvasSetup?.active} onClick={() => run(() => window.steady.cancelCanvas())}>Cancel canvas setup</button><button onClick={() => run(() => window.steady.closeSettings())}>Close settings before Resume</button></div>
     {status.canvas && <p>Canvas: {status.canvas.width.toFixed(0)} × {status.canvas.height.toFixed(0)} at ({status.canvas.x.toFixed(0)}, {status.canvas.y.toFixed(0)}).</p>}
-    <p>Display changes, camera/mode changes, foreground changes, sleep and tracking loss release input. Return to Krita and Resume explicitly. Palm loss also requires Confirm selected hand. Moving or resizing the Krita document area requires Set canvas again.</p>
+    <p>Canvas setup always ends paused. Complete calibration and explicitly Resume to draw. Display changes, camera/mode changes, foreground changes, sleep and tracking loss release input. Palm loss also requires Confirm selected hand. Advanced canvas setup retains tracked corner marking with F8.</p>
   </section>;
 }
 
@@ -287,9 +323,9 @@ function CommandSettings({ status, run }: { status: ProbeStatus; run: (work: () 
   const generic = profile.targetBundleId !== 'org.krita' || profile.name !== 'Krita';
   return <section aria-labelledby="commands-heading">
     <h2 id="commands-heading">Commands and global bindings</h2>
-    <p>F8 toggles the pen, or marks corners during canvas setup. F9 pauses. Other bindings begin unassigned. macOS may require Fn with function keys; configure keys or an external switch here. Conflicts remain visible and require a different binding.</p>
+    <p>F8 toggles the pen, or marks corners during advanced tracked setup. F9 pauses. Detect canvas and Select with mouse also have configurable bindings. Other bindings begin unassigned. macOS may require Fn with function keys; configure keys or an external switch here. Conflicts remain visible and require a different binding.</p>
     {status.bindingConflicts?.length ? <p role="alert" className="error">Global binding conflicts: {status.bindingConflicts.join('; ')}</p> : null}
-    <div className="binding-grid">{ALL_CONTROLS.map(id => <label key={id}>{actionLabels.find(([action]) => action === id)?.[1] ?? ({openSettings:'Open settings',togglePanel:'Collapse / expand',quit:'Quit',beginCanvas:'Set canvas',cancelCanvas:'Cancel canvas',recover:'Recover helper',confirmHand:'Confirm hand'} as Record<string,string>)[id]}<input aria-label={`Binding ${id}`} value={bindings[id] ?? ''} placeholder="Unassigned" onChange={event => setBindings(current => ({ ...current, [id]: event.target.value }))} /></label>)}</div>
+    <div className="binding-grid">{ALL_CONTROLS.map(id => <label key={id}>{actionLabels.find(([action]) => action === id)?.[1] ?? ({openSettings:'Open settings',togglePanel:'Collapse / expand',quit:'Quit',beginCanvas:'Detect canvas',selectCanvas:'Select with mouse',reviewWorkspace:'Review suggested workspace',beginLegacyCanvas:'Tracked corner setup',cancelCanvas:'Cancel canvas',recover:'Recover helper',confirmHand:'Confirm hand'} as Record<string,string>)[id]}<input aria-label={`Binding ${id}`} value={bindings[id] ?? ''} placeholder="Unassigned" onChange={event => setBindings(current => ({ ...current, [id]: event.target.value }))} /></label>)}</div>
     <button onClick={() => run(() => window.steady.saveBindings(bindings))}>Save global bindings</button>
     <h3>Target shortcut profile</h3>
     <label>Profile<select value={generic ? 'generic' : 'krita'} onChange={event => setProfile(event.target.value === 'krita' ? kritaProfile() : { ...kritaProfile(), name: 'Generic', targetBundleId: 'org.example.editor' })}><option value="krita">Krita 5.3.4 defaults · manual verification required</option><option value="generic">Generic · unverified configuration preview</option></select></label>
@@ -302,4 +338,6 @@ function CommandSettings({ status, run }: { status: ProbeStatus; run: (work: () 
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Renderer root missing');
-createRoot(root).render(<StrictMode><App /></StrictMode>);
+const view = new URLSearchParams(location.search).get('view');
+if (view === 'canvas-overlay' || view === 'canvas-outline') document.documentElement.classList.add('canvas-window');
+createRoot(root).render(<StrictMode>{view === 'canvas-overlay' ? <CanvasOverlay /> : view === 'canvas-outline' ? <CanvasOutline /> : <App />}</StrictMode>);
