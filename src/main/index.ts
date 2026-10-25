@@ -2,10 +2,9 @@ import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, net, powerMonit
 import { randomUUID } from 'node:crypto';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { BufferedLog } from './buffered-log';
 import { pathToFileURL } from 'node:url';
 import { NativeSupervisor } from './supervisor';
-import { emptySpeechDiagnostics, isSpeechDiagnosticError, SpeechDiagnosticRecorder } from './speech-diagnostics';
 import { LiveProbe } from './live-probe';
 import { PANEL_COLLAPSED_HEIGHT, PANEL_HEIGHT, PANEL_WIDTH, SETTINGS_HEIGHT, SETTINGS_WIDTH, TOAST_HEIGHT, TOAST_WIDTH, UTILITY_SIZE, canvasSelectionControlsFrame, panelPosition, preferredDisplay, sameCanvasSelectionDisplay, previewClearOf, settingsFrame, toastPosition, utilityPosition, type UtilityView } from './panel';
 import { CanvasCapture, containsPoint, fitWorkspaceSuggestion, intersects, validateCanvas } from './canvas';
@@ -17,7 +16,6 @@ import { freshPointer, mappedSampleAllowed, readyForControl } from './input-gate
 import { resourcesRoot, verifyResources } from './resources';
 import { ACTIONS, type Ack, type ActionID, type LocalActionID, type Point, type DisplayInfo, type Mode, type ProbeStatus, type Rect, type TrackingSample, type CanvasObservation, type CanvasSelectionSession, type ToastMessage } from '../shared/contracts';
 import { isObject, rect, uint, point, finite } from './protocol';
-import { isTrackingSample } from '../shared/tracking-validation';
 import { DisplayLayoutGuard } from './display-layout';
 import { ConfigurationQueue } from './configuration';
 import { deliverCommand } from './command-delivery';
@@ -32,7 +30,6 @@ import type { PlanStep } from './voice/plan';
 import { explainRejection } from './rejections';
 import { OUTSIDE_CANVAS_CODES, PenArming } from './pen-arming';
 import { StillLift } from './still-lift';
-import { validPenGesture } from '../shared/settings';
 import type { CommandEvent } from './voice/types';
 import type { VoiceCaptureReport } from '../shared/voice';
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -440,8 +437,6 @@ function pointerInCanvas(): boolean {
   return Boolean(position && canvas && containsPoint(canvas, position) && !overlaySurfaces().some(win => containsPoint(win.getBounds(), position)));
 }
 function penContext() { return { native: supervisor?.state?.state, buttonDown: Boolean(supervisor?.state?.buttonDown), inCanvas: pointerInCanvas() }; }
-// The rest/lift gesture is retired in favor of lifting when still; saved gesture settings are ignored.
-function penGestureEnabled(): boolean { return false; }
 /**
  * Holding still with the pen down lifts it (Steady Tracker's pen-up dwell: 1.2 s within 7.5 pt). It only arms once
  * the pointer has moved 15 pt from where the pen went down, so a fresh "pen down" isn't lifted straight away.
@@ -462,32 +457,42 @@ function engageArmedPen(): void {
 }
 /** Tracked-click targets per overlay surface, keyed by webContents id, in window-local coordinates. */
 const surfaceButtons = new Map<number, {actionId:LocalActionID;rect:Rect}[]>();
-let speechSession: string | null = null;
-const speechSeen = new Set<string>();
 let shutdownStarted = false;
 let resourcesReady=false;
 let liveProbe: ChildProcessWithoutNullStreams | null = null;
 let liveProbeLifecycle: LiveProbe | null = null;
+let trackingLog: BufferedLog | null = null;
+const probeLogs = new Set<BufferedLog>();
 function trackingEvidence(type: string, data: unknown): void {
-  const directory=path.join(app.getPath('userData'),'phase03-evidence');mkdirSync(directory,{recursive:true});
-  appendFileSync(path.join(directory,'tracking.jsonl'),JSON.stringify({v:1,type,time:new Date().toISOString(),evidence:'physical-camera operator trial or automated harness; classify by session launch',cameraId:savedSettings.cameraId,mode:savedSettings.mode,displayId:status.selectedDisplayId,data})+'\n');
+  trackingLog ??= new BufferedLog(path.join(app.getPath('userData'), 'phase03-evidence', 'tracking.jsonl'));
+  trackingLog.write(JSON.stringify({v:1,type,time:new Date().toISOString(),evidence:'physical-camera operator trial or automated harness; classify by session launch',cameraId:savedSettings.cameraId,mode:savedSettings.mode,displayId:status.selectedDisplayId,data})+'\n');
 }
 function stopLiveProbe(): void { liveProbeLifecycle?.cancel(); }
 function releaseRealInput(): void { spawnSync(path.join(resourcesRoot(),'bin','SteadyNative'),['--release-and-exit',testFakeBackend?'--test-fake-backend':'--real-input'],{stdio:'ignore',timeout:1000}); }
-function publish(): void {
+let statusTimer: ReturnType<typeof setTimeout> | undefined;
+let diagnosticsRevision = -1;
+function publish(immediate = true): void {
   if (canvasSetRequest.current && (!canvasSetRequest.matches({ generation, targetPid: status.targetPid ?? 0, displayId: status.selectedDisplayId ?? -1 }) ||
     status.settingsOpen || panelGeometryPending || status.nativeFault || status.native?.foregroundTarget !== 'org.krita')) {
     cancelPendingCanvasSet('Canvas setup canceled because the configuration or foreground app changed. Return to Krita and choose Set canvas again.');
   }
   if (canvasCapture.active) canvasSetup.legacy(true, canvasCapture.firstCorner, canvasCapture.message);
-  status = {...status, generation, realInput, canvas, canvasSetup: structuredClone(canvasSetup.state), canvasDiagnostics: canvasDiagnostics.snapshot()};
+  if (!immediate) {
+    statusTimer ??= setTimeout(() => { statusTimer = undefined; publish(); }, 100);
+    return;
+  }
+  clearTimeout(statusTimer); statusTimer = undefined;
+  if (diagnosticsRevision !== canvasDiagnostics.revision) { status.canvasDiagnostics = canvasDiagnostics.snapshot(); diagnosticsRevision = canvasDiagnostics.revision; }
+  status = {...status, generation, realInput, canvas, canvasSetup: structuredClone(canvasSetup.state)};
   for (const win of [panel,settings,advanced,selectionOverlay,canvasOutline,utilities.preview]) if (win && !win.isDestroyed()) win.webContents.send('steady:status-changed', statusForWindow(win));
 }
 function statusForWindow(win: BrowserWindow): ProbeStatus {
   // Screen/AX geometry and Electron content bounds are logical points. macOS
   // can clamp the requested window origin, so display bounds are not a valid
   // substitute for the actual page origin used by clientX/clientY and CSS.
-  return win === selectionOverlay || win === canvasOutline ? { ...status, canvasSurfaceBounds: win.getContentBounds() } : status;
+  if (win === selectionOverlay || win === canvasOutline) return { ...status, canvasDiagnostics: undefined, canvasSurfaceBounds: win.getContentBounds() };
+  if (win === utilities.preview) return { ...status, canvasDiagnostics: undefined };
+  return status;
 }
 function trackCanvasSurface(win: BrowserWindow): void {
   const changed = (): void => { if (!win.isDestroyed() && (win === selectionOverlay || win === canvasOutline)) publish(); };
@@ -680,12 +685,12 @@ async function microphone(enabled: boolean): Promise<void> {
   if (!voice) throw new Error('Voice input is unavailable.');
   voice.setMicrophone(enabled);
 }
-let intentClient: IntentClient | null | undefined;
+let intentClient: Promise<IntentClient | null> | undefined;
 /** null when Claude is unavailable (no key, network error); [] when it heard no request. */
 async function interpretWithClaude(text: string): Promise<PlanStep[] | null> {
-  if (intentClient === undefined) { const key = anthropicKey(); intentClient = key ? createIntentClient(key) : null; }
-  if (!intentClient) return null;
-  try { return await interpretPlan(intentClient, text); }
+  const client = await (intentClient ??= anthropicKey().then(key => key ? createIntentClient(key) : null));
+  if (!client) return null;
+  try { return await interpretPlan(client, text); }
   catch (error) { console.warn('Claude intent failed:', error instanceof Error ? error.message : error); return null; }
 }
 /** <<COMMAND_ENTRYPOINT>> for voice: runs the spoken plan through the shared dispatcher, resolving after the native acks. */
@@ -887,16 +892,6 @@ function installIPC(): void {
     settingsStore.save(savedSettings);status.settings=savedSettings;status.canvasConfirmed=false;
     invalidateCanvas();await configureControl();status.fault='Camera orientation changed; recalibrate';publish();
   }));
-  handle('save-pen-gesture',(value:unknown)=>configuration.run(async()=>{
-    const remove=isObject(value)&&value.remove===true&&typeof value.cameraId==='string';
-    if(!remove&&!validPenGesture(value))throw new Error('Invalid pen gesture setting');
-    const cameraId=(value as {cameraId:string}).cameraId;
-    await pause('Pen gesture setting changed; Resume when ready.');pen.release();
-    const rest=(savedSettings.penGestures??[]).filter(entry=>entry.cameraId!==cameraId);
-    const penGestures=remove?rest:[...rest,value as import('../shared/settings').PenGestureSetting];
-    savedSettings={...savedSettings,penGestures};if(!penGestures.length)delete savedSettings.penGestures;
-    settingsStore.save(savedSettings);status.settings=savedSettings;publishPen();
-  }));
   handle('panel-opacity',(opacity:unknown)=>{if(opacity!==1&&opacity!==0.7)throw new Error('Invalid opacity');for(const win of overlaySurfaces())win.setOpacity(opacity);status.panelOpacity=opacity;publish();});
   handle('select-display',(displayId:unknown)=>configuration.run(async()=>{
     if(!uint(displayId)||!status.displays.some(display=>display.id===displayId))throw new Error('Unknown native display');
@@ -918,8 +913,9 @@ function installIPC(): void {
     if(liveProbe)throw new Error('Probe already running');
     await pause('Bounded real-input probe: switch to disposable Krita document within five seconds');
     const child=liveProbe=spawn(path.join(resourcesRoot(),'bin','SteadyNative'),['--probe','--real-input',...(status.selectedDisplayId===undefined?[]:['--probe-display',String(status.selectedDisplayId)])],{stdio:['pipe','pipe','pipe']});
-    const directory=path.join(app.getPath('userData'),'phase01-evidence');mkdirSync(directory,{recursive:true});
-    child.stdout.on('data',data=>appendFileSync(path.join(directory,'native-probe.jsonl'),data));
+    const log = new BufferedLog(path.join(app.getPath('userData'),'phase01-evidence','native-probe.jsonl')); probeLogs.add(log);
+    child.stdout.on('data', data => log.write(data));
+    child.stdout.on('end', () => { void log.flush().finally(() => probeLogs.delete(log)); });
     child.stderr.on('data',()=>{});
     liveProbeLifecycle=new LiveProbe(child,releaseRealInput,message=>{if(liveProbe===child){liveProbe=null;liveProbeLifecycle=null;}fault(message);});
   });
@@ -938,17 +934,6 @@ function installIPC(): void {
     if(supervisor?.state?.generation===generation)supervisor.submit(sample, sample.valid ? position as Point : null, sample.captureTimestamp);
     if(sample.valid&&pen.armed)engageArmedPen();
     if(sample.valid)liftWhenStill(position as Point,performance.now());else stillLift.reset();
-  });
-  // Rest/lift gesture (opt-in): rest arms the pen (it presses inside the canvas only); lift releases.
-  ipcMain.on('steady:pen-gesture',(event,state:unknown,gestureGeneration:unknown)=>{
-    trusted(event);
-    if(event.sender!==panel?.webContents||(state!=='rest'&&state!=='lift')||gestureGeneration!==generation||!penGestureEnabled())return;
-    if(state==='lift'){
-      pen.release();publishPen();
-      if(supervisor?.state?.buttonDown)void enqueueAction('penUp').catch(error=>fault(String(error)));
-      return;
-    }
-    void enqueueAction('penDown').catch(()=>publishPen());
   });
   ipcMain.on('steady:voice-frame',(event,pcm:unknown)=>{if(event.sender!==panel?.webContents||event.senderFrame!==event.sender.mainFrame)return;voice?.frame(pcm);});
   ipcMain.on('steady:voice-report',(event,report:unknown)=>{
@@ -978,8 +963,10 @@ async function startNative(): Promise<void> {
     if(pen.native(state.state))status.penArmed=false;
     if(!state.buttonDown)stillLift.reset();
     if(status.native && ['HOVER','DRAWING'].includes(status.native.state) && state.state!==status.native.state && state.reason==='stale-capture')showToast('trackingLost');
-    status.native=state;if(state.reason==='microphone-enabled'&&speechSession!==null)status.microphoneEnabled=true;if(state.reason==='microphone-disabled')status.microphoneEnabled=false;if(state.reason==='speech-assets-ready')status.speechDiagnostics={...(status.speechDiagnostics??emptySpeechDiagnostics(speechSession)),assets:'ready'};publish();});
-  next.on('fault',(message)=>{if(supervisor!==next)return;invalidateCanvas('Native helper unavailable; recover it and set the canvas again.');speechSession=null;status.microphoneEnabled=false;status.nativeClockReady=false;status.nativeFault=message;trackingEvidence('native-fault',{message});fault(message);});
+    const previous = status.native;
+    const immediate = !previous || previous.state !== state.state || previous.reason !== state.reason || previous.buttonDown !== state.buttonDown || previous.generation !== state.generation || previous.foregroundTarget !== state.foregroundTarget || Object.keys(state.permissions).some(key => previous.permissions[key as keyof typeof previous.permissions] !== state.permissions[key as keyof typeof state.permissions]);
+    status.native = state; publish(immediate); });
+  next.on('fault',(message)=>{if(supervisor!==next)return;invalidateCanvas('Native helper unavailable; recover it and set the canvas again.');status.nativeClockReady=false;status.nativeFault=message;trackingEvidence('native-fault',{message});fault(message);});
   next.on('clock-ready',ready=>{if(supervisor!==next)return;status.nativeClockReady=ready;publish();});
   next.on('hello',(ack)=>{updateDisplays(ack.displays??[]);status.targetPid=ack.targetPid??null;publish();});
   next.on('displays',displays=>updateDisplays(displays));
@@ -1007,23 +994,6 @@ async function startNative(): Promise<void> {
         lastTimestamp: latestCanvasObservation?.observedAt ?? -Infinity, uncertainty: next.clock.uncertainty },
       () => next.request('ping', { senderTimestamp: performance.now() }), value => observeCanvas(value,next));
     }).catch(error=>fault(String(error))).finally(()=>{canvasObservationPending=false;});
-  });
-  const speechDiagnosticRecorder=new SpeechDiagnosticRecorder(path.join(app.getPath('userData'),'phase01-evidence','speech-diagnostics.jsonl'));
-  next.on('speech-diagnostics',diagnostics=>{status.speechDiagnostics=diagnostics;try{speechDiagnosticRecorder.write(diagnostics);}catch{fault('Speech diagnostic evidence could not be saved');}publish();});
-  next.on('native-fault',code=>{const errorCode=code==='microphone-failed'?'microphone-setup-failed':code;if(isSpeechDiagnosticError(errorCode)){status.speechDiagnostics={...(status.speechDiagnostics??emptySpeechDiagnostics(speechSession)),phase:'error',...(code==='speech-assets-failed'?{assets:'error' as const}:{}),errorCode};try{speechDiagnosticRecorder.write(status.speechDiagnostics);}catch{fault('Speech diagnostic evidence could not be saved');}publish();}});
-  next.on('speech',event=>{
-    const key=`${event.speechSession}:${event.utterance}`;
-    if(event.speechSession!==speechSession||speechSeen.has(key))return;
-    speechSeen.add(key); if(speechSeen.size>1000) {void microphone(false);return;}
-    const record=(ack:Ack|null)=>{
-      const timing={speechSession:event.speechSession,utterance:event.utterance,actionId:event.actionId,speechEndTimestamp:event.speechEndTimestamp,recognitionTimestamp:event.acceptedTimestamp,actionTimestamp:ack?.nativeTimestamp??null,latencyMs:ack?.nativeTimestamp==null?null:ack.nativeTimestamp-event.speechEndTimestamp,accepted:ack?.accepted??false};
-      const directory=path.join(app.getPath('userData'),'phase01-evidence');mkdirSync(directory,{recursive:true});appendFileSync(path.join(directory,'speech-timings.jsonl'),JSON.stringify(timing)+'\n');
-    };
-    if(event.actionId===null){record(null);fault(event.reason==='late-result-retry'?'Speech result expired; retry':`Speech command rejected: ${event.reason}`);return;}
-    let currentNative:number;
-    try{currentNative=supervisor!.clock.convert(performance.now(),performance.now());}catch{fault('Speech clock requires synchronization; retry');return;}
-    if(event.acceptedTimestamp-event.speechEndTimestamp>1500||currentNative-event.speechEndTimestamp>1500){record(null);fault('Speech result expired; retry');return;}
-    void dispatch(event.actionId,key).then(record).catch(error=>{record(null);fault(String(error));});
   });
   try { await next.start(); generation++; await configureControl(); }
   catch(error) { status.nativeFault=String(error); fault(String(error)); }
@@ -1053,7 +1023,7 @@ async function main(): Promise<void> {
     if(url.hostname!=='assets'||!filename.startsWith(root+path.sep))return new Response('Forbidden',{status:403});
     return net.fetch(pathToFileURL(filename).href);
   });
-  try { verifyResources();resourcesReady=true; } catch(error) { fault(String(error)); }
+  try { await verifyResources();resourcesReady=true; } catch(error) { fault(String(error)); }
   panel=new BrowserWindow({ ...initialPanelPosition(),width:PANEL_WIDTH,height:PANEL_HEIGHT,resizable:false,frame:false,transparent:true,hasShadow:true,show:false,type:'panel',focusable:false,alwaysOnTop:true,skipTaskbar:true,title:'Steady',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false} });
   panel.setAlwaysOnTop(true,'floating'); panel.setVisibleOnAllWorkspaces(true,{visibleOnFullScreen:true}); secureWindow(panel);
   panel.on('close',()=>{if(!quitting)app.quit();});
@@ -1096,7 +1066,7 @@ async function main(): Promise<void> {
   installIPC();await loadView(panel,'panel');panel.showInactive();
   await Promise.all([loadView(preview,'preview'),loadView(toastWindow,'toast')]);preview.showInactive();
   voice=new ElectronVoice({buildDir:__dirname,voiceRoot:path.join(resourcesRoot(),'voice'),packaged:app.isPackaged,userData:app.getPath('userData'),
-    panel:()=>panel,windows:()=>[panel,settings],execute:executeVoiceCommand,microphoneChanged:open=>{status.microphoneEnabled=open;publish();}});
+    panel:()=>panel,windows:()=>[panel,settings,advanced],execute:executeVoiceCommand,microphoneChanged:open=>{status.microphoneEnabled=open;publish();}});
   voice.start();
   app.on('browser-window-focus',()=>voice?.appFocused());
   await startNative(); installBindings();
@@ -1132,7 +1102,12 @@ app.on('before-quit',event=>{
   canvasSetRequest.cancel();
   if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;quitting=true;bindingInstaller.clear();
   stopLiveProbe();
-  void Promise.allSettled([voice?.stop(),supervisor?.stop()]).finally(()=>app.quit());
+  clearTimeout(statusTimer);
+  void Promise.allSettled([voice?.stop(),supervisor?.stop()])
+    .then(() => Promise.allSettled([trackingLog?.flush(),...Array.from(probeLogs, log => log.flush())]))
+    .finally(()=>app.quit());
 });
 app.on('window-all-closed',()=>{if(!quitting)app.quit();});
-void main().catch(error=>fault(String(error)));
+// Electron holds an OS-backed lock until exit; no stale PID file or read/write race.
+if (app.requestSingleInstanceLock()) void main().catch(error=>fault(String(error)));
+else app.quit();

@@ -4,7 +4,6 @@ const fake=vi.hoisted(()=>({child:null as any,release:vi.fn(),hold:new Set<strin
 vi.mock('node:child_process',()=>({spawn:(...args:unknown[])=>{fake.spawnCalls.push(args);return fake.child;},spawnSync:fake.release}));
 import { NativeSupervisor } from '../src/main/supervisor';
 import type { NativeState } from '../src/shared/contracts';
-import { emptySpeechDiagnostics, SPEECH_DIAGNOSTICS_PREFIX } from '../src/main/speech-diagnostics';
 const state:NativeState={state:'PAUSED',reason:'test',buttonDown:false,foregroundTarget:null,permissions:{accessibility:false,camera:'notDetermined',microphone:'notDetermined',speech:'notDetermined'},generation:0,latestValidFrame:null};
 beforeEach(()=>{
   vi.useRealTimers();fake.release.mockReset();fake.hold.clear();fake.held=[];fake.spawnCalls=[];fake.beforeAck=null;fake.transform=null;let replySeq=0;
@@ -59,20 +58,7 @@ describe('native supervision',()=>{
     await supervisor.request('action',{generation:0,eventId:'still-alive',actionId:'pause'});
     await supervisor.stop();
   });
-  it('allowlists stderr speech counters, rate limits updates and rejects replaced/disabled sessions',async()=>{
-    const supervisor=new NativeSupervisor('/fake/helper',false);await supervisor.start();const updates:any[]=[];supervisor.on('speech-diagnostics',value=>updates.push(value));
-    let now=1000;const clock=vi.spyOn(performance,'now').mockImplementation(()=>now);
-    const session='00000000-0000-4000-8000-000000000001';
-    const emit=(value:unknown)=>fake.child.stderr.emit('data',Buffer.from(SPEECH_DIAGNOSTICS_PREFIX+JSON.stringify(value)+'\n'));
-    try{
-      emit(emptySpeechDiagnostics(null));emit(emptySpeechDiagnostics(null));expect(updates).toHaveLength(1);
-      await supervisor.request('microphone',{enabled:true,speechSession:session});emit(emptySpeechDiagnostics(null));expect(updates).toHaveLength(1);
-      emit({...emptySpeechDiagnostics(session),audioBuffers:1});emit({...emptySpeechDiagnostics(session),audioBuffers:2});expect(updates).toHaveLength(2);
-      now+=1000;emit({...emptySpeechDiagnostics(session),audioBuffers:3});expect(updates.at(-1).audioBuffers).toBe(3);
-      await supervisor.request('microphone',{enabled:false,speechSession:'00000000-0000-4000-8000-000000000002'});
-      emit({...emptySpeechDiagnostics(session),audioBuffers:4});expect(updates).toHaveLength(3);emit({...emptySpeechDiagnostics(null),phase:'stopped',audioBuffers:3});expect(updates.at(-1)).toMatchObject({session:null,phase:'stopped',audioBuffers:3});
-    }finally{clock.mockRestore();await supervisor.stop();}
-  });
+
 });
 
 

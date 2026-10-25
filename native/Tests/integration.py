@@ -113,8 +113,7 @@ assert 'down' in probe_events and probe_events[-1] == 'up', probe_events
 print('PASS actual process: dedicated bounded probe observes EOF and releases held fake button')
 
 peer = Peer()
-# These requests must fail before the preserved SpeechProbe schedules any
-# permission, asset, or microphone work, even for a direct protocol client.
+# Legacy speech requests cannot schedule permission, asset, or microphone work.
 for kind, payload in [('microphone', {'enabled': True, 'speechSession': str(uuid.uuid4())}), ('installSpeechAssets', {'locale': 'en-US'})]:
     ack = peer.request(kind, payload)
     assert not ack['accepted'] and ack['code'] == 'voice-deferred-phase01', ack
@@ -123,18 +122,10 @@ peer.eof()
 print('PASS actual process: deferred voice rejects microphone enable and asset setup; disable remains allowed')
 
 peer = Peer()
-idle_diagnostic = queue.Queue()
-def read_idle_diagnostic():
-    idle_diagnostic.put(peer.process.stderr.readline())
-threading.Thread(target=read_idle_diagnostic, daemon=True).start()
-diagnostic_line = idle_diagnostic.get(timeout=3)
-assert diagnostic_line.startswith('steady-speech-probe:') and len(diagnostic_line.encode('utf8')) <= 2048
-diagnostic = json.loads(diagnostic_line.removeprefix('steady-speech-probe:'))
-assert diagnostic['session'] is None and diagnostic['phase'] == 'idle'
-assert diagnostic['audioBuffers'] == 0 and diagnostic['transcriberResults'] == 0 and diagnostic['detectorResults'] == 0
-assert 'text' not in diagnostic and 'transcript' not in diagnostic
+time.sleep(1.2)
 peer.eof()
-print('PASS actual process: bounded idle speech diagnostics emit without opening microphone')
+assert 'steady-speech-probe:' not in peer.process.stderr.read()
+print('PASS actual process: idle helper has no retired speech diagnostics timer')
 process, incoming = launch()
 process.stdin.write(json.dumps({'v': 2, 'session': str(uuid.uuid4()), 'seq': 1, 'type': 'hello', 'payload': {'bundleId': 'org.steady.local'}})+'\n'); process.stdin.flush()
 assert incoming.get(timeout=2)['type'] == 'fault'

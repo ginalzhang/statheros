@@ -8,6 +8,7 @@ export type SessionSignal = SttSignal | { type: 'SttConnected' } | { type: 'SttC
 
 export interface SocketLike {
   readonly readyState: number;
+  readonly bufferedAmount: number;
   send(data: string | Buffer): void;
   close(code?: number): void;
   terminate(): void;
@@ -23,6 +24,8 @@ export const defaultSocketFactory: SocketFactory = (url, headers) => new WebSock
 
 const ORIGIN = 'wss://api.cartesia.ai';
 const PATHS: Record<Endpoint, string> = { auto: '/stt/turns/websocket', manual: '/stt/websocket' };
+/** At most two seconds of audio may wait in the socket's write queue. */
+export const MAX_BUFFERED_AUDIO_BYTES = 16000 * 2 * 2;
 
 /** Query string per Appendix A.1. The version is a query parameter on raw WebSockets. */
 export function sttUrl(kind: Endpoint, config: VoiceConfig, origin?: string): string {
@@ -55,6 +58,7 @@ export class SttSession {
   private finished = false;
   private connected = false;
   private closeTimer: ReturnType<typeof setTimeout> | undefined;
+  private cancelConnect: (() => void) | null = null;
 
   constructor(
     readonly sessionId: number, readonly kind: Endpoint, private readonly config: VoiceConfig, private readonly apiKey: string,
@@ -64,9 +68,10 @@ export class SttSession {
     this.builder = kind === 'auto' ? new AutoTranscriptBuilder() : new ManualTranscriptBuilder();
   }
 
-  get isOpen(): boolean { return this.connected && this.socket?.readyState === WebSocket.OPEN; }
+  get isOpen(): boolean { return !this.finished && this.connected && this.socket?.readyState === WebSocket.OPEN; }
 
   async open(): Promise<void> {
+    if (this.finished) return;
     const now = this.options.now ?? (() => performance.now() / 1000);
     const deadline = now() + this.config.stt.connectTimeoutS;
     for (let attempt = 1; attempt <= this.config.stt.connectAttempts; attempt++) {
@@ -90,12 +95,14 @@ export class SttSession {
   private connectOnce(seconds: number): Promise<{ ok: true } | { ok: false; status: number | null; message: string }> {
     return new Promise(resolve => {
       let settled = false;
-      const done = (value: { ok: true } | { ok: false; status: number | null; message: string }): void => { if (!settled) { settled = true; clearTimeout(timer); resolve(value); } };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const done = (value: { ok: true } | { ok: false; status: number | null; message: string }): void => { if (!settled) { settled = true; clearTimeout(timer); this.cancelConnect = null; resolve(value); } };
       let socket: SocketLike;
       try { socket = (this.options.factory ?? defaultSocketFactory)(sttUrl(this.kind, this.config, this.options.baseUrl), { 'X-API-Key': this.apiKey }); }
       catch (error) { done({ ok: false, status: null, message: String(error) }); return; }
       this.socket = socket;
-      const timer = setTimeout(() => { socket.terminate(); done({ ok: false, status: null, message: 'Connect timed out' }); }, seconds * 1000);
+      this.cancelConnect = () => done({ ok: false, status: null, message: 'Connection aborted' });
+      timer = setTimeout(() => { socket.terminate(); done({ ok: false, status: null, message: 'Connect timed out' }); }, seconds * 1000);
       socket.on('unexpected-response', (_request, response) => { done({ ok: false, status: response.statusCode ?? null, message: `HTTP ${response.statusCode}` }); socket.terminate(); });
       socket.on('open', () => done({ ok: true }));
       socket.on('error', error => done({ ok: false, status: null, message: error.message }));
@@ -129,7 +136,12 @@ export class SttSession {
   /** Binary write; the Forwarder is the only caller and has already checked the cloud gate. */
   sendAudio(pcm: Buffer): boolean {
     if (!this.isOpen) return false;
-    this.socket!.send(pcm);
+    if (this.socket!.bufferedAmount + pcm.length > MAX_BUFFERED_AUDIO_BYTES) {
+      this.fail('backpressure', 'Connection is too slow for live audio. Please try again.', false);
+      return false;
+    }
+    try { this.socket!.send(pcm); }
+    catch { this.fail('send', 'Audio connection closed. Please try again.', false); return false; }
     return true;
   }
   /** Manual: bare text frame. Auto has no finalize primitive. */
@@ -150,6 +162,7 @@ export class SttSession {
     clearTimeout(this.closeTimer);
     const socket = this.socket;
     this.finished = true; this.socket = null;
+    this.cancelConnect?.();
     try { socket?.terminate(); } catch { /* already gone */ }
   }
 }

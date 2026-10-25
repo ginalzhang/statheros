@@ -39,7 +39,7 @@ private func steadyDisplayChanged(_ display:CGDirectDisplayID,_ flags:CGDisplayC
   if let fakeBackend,args.contains("--test-system-displays") {
    // Packaged integration keeps desktop events fake while reading host geometry.
    // Pure fake process/unit tests omit this flag and retain synthetic displays.
-   fakeBackend.displayInfos=SystemBackend(real:false).displays()
+   fakeBackend.displayInfos=SystemBackend(real:false).testDisplays()
   }
   let backend:any InputBackend=fakeBackend ?? SystemBackend(real:real)
   let logFake:@Sendable ()->Void = {if let fakeBackend,let data=try? JSONEncoder().encode(fakeBackend.events),let line=String(data:data,encoding:.utf8){writer.diagnostic("fake-events: "+line)}}
@@ -56,7 +56,6 @@ private func steadyDisplayChanged(_ display:CGDirectDisplayID,_ flags:CGDisplayC
    await runProbe(engine:engine,writer:writer,logFake:logFake);withExtendedLifetime(metadata){};logFake();return
   }
   let canvasMonitor=CanvasAccessibility(engine:engine,fake:fakeTest){observation in writer.event{engine.event(type:"canvasObservation",payload:observation.json)}}
-  let speech=SpeechProbe(output:{p in writer.event{engine.event(type:"speech",payload:p)}},fault:{message in writer.event{engine.event(type:"fault",payload:.object(["code":.string(message),"message":.string(message)]))}},diagnostics:{value in if let data=try? JSONEncoder().encode(value){writer.diagnostic("steady-speech-probe:"+String(decoding:data,as:UTF8.self))}})
   let parserQueue=DispatchQueue(label:"org.steady.native.protocol",qos:.userInitiated)
   let watchdogQueue=DispatchQueue(label:"org.steady.native.watchdog",qos:.userInteractive)
   let outputQueue=DispatchQueue(label:"org.steady.native.output",qos:.userInitiated)
@@ -75,14 +74,11 @@ private func steadyDisplayChanged(_ display:CGDirectDisplayID,_ flags:CGDisplayC
   let source=DispatchSource.makeReadSource(fileDescriptor:STDIN_FILENO,queue:parserQueue)
   source.setEventHandler { @Sendable in
    var bytes=[UInt8](repeating:0,count:4096);let n=read(STDIN_FILENO,&bytes,bytes.count)
-   guard n>0 else{engine.disconnect();logFake();Task{@MainActor in await speech.stop();exit(0)};source.cancel();return}
+   guard n>0 else{engine.disconnect();logFake();exit(0)}
    do {for line in try framer.feed(Data(bytes.prefix(n))) {
     let request=try Wire.parse(line);let reply=writer.response{engine.handle(request,now:monotonicMilliseconds())}
     let accepted=reply.payload.object?["accepted"]?.bool==true
-    if accepted,request.type=="microphone",let p=request.payload.object,let enabled=p["enabled"]?.bool,let session=p["speechSession"]?.string {Task{@MainActor in do{if try await speech.set(enabled:enabled,session:session){engine.report(enabled ? "microphone-enabled" : "microphone-disabled");writer.event{engine.event(type:"state",payload:stateJSON(engine.snapshot))}}}catch{speech.diagnosticError("microphone-setup-failed");writer.event{engine.event(type:"fault",payload:.object(["code":.string("microphone-failed"),"message":.string(String(describing:error))]))}}}}
-    if accepted,request.type=="installSpeechAssets" {Task{@MainActor in do{try await speech.install();engine.report("speech-assets-ready");writer.event{engine.event(type:"state",payload:stateJSON(engine.snapshot))}}catch{writer.event{engine.event(type:"fault",payload:.object(["code":.string("speech-assets-failed"),"message":.string(String(describing:error))]))}}}}
-    if accepted,request.type=="action",request.payload.object?["actionId"]?.string=="microphoneOff"{Task{@MainActor in await speech.stop()}}
-    if accepted,request.type=="shutdown"{Task{@MainActor in await speech.stop();exit(0)}}
+    if accepted,request.type=="shutdown"{exit(0)}
    }}catch {writer.response{engine.faultReply(session:"00000000-0000-4000-8000-000000000000",code:"protocol-invalid")};engine.disconnect();logFake();exit(3)}
   };source.resume()
   while !Task.isCancelled {try? await Task.sleep(for:.seconds(30));withExtendedLifetime((source,timer,term,interrupt,metadata,canvasMonitor)) {}}

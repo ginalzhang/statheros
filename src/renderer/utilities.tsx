@@ -8,6 +8,7 @@ import { Icon, type IconName } from './icons';
 /** Statheros 2 floating surfaces: the compact panel and the Camera Preview, plus transient notifications. The
  * panel renderer owns the camera; it streams preview frames to the Camera Preview window. */
 export const PREVIEW_FRAMES_CHANNEL = 'steady-preview-frames';
+export const PREVIEW_INTERVAL_MS = 1000 / 15;
 export const initialStatus: ProbeStatus = { native: null, displays: [], fault: null, collapsed: false, settingsOpen: false, generation: 0, realInput: false, microphoneEnabled: false };
 export const initialProbe: ProbeReport = { message: 'Camera off', frames: 0, delegate: null, running: false };
 
@@ -80,17 +81,21 @@ export class PreviewStreamer {
   private readonly channel = new BroadcastChannel(PREVIEW_FRAMES_CHANNEL);
   private readonly scaled = document.createElement('canvas');
   private encoding = false;
+  private closed = false;
+  private lastEncoded = -Infinity;
   constructor() { this.scaled.width = 400; this.scaled.height = 300; }
-  push(source: HTMLCanvasElement): void {
-    if (this.encoding || !source.width || !source.height) return;
+  push(source: HTMLCanvasElement, now = performance.now()): void {
+    if (this.closed || this.encoding || now - this.lastEncoded < PREVIEW_INTERVAL_MS || !source.width || !source.height) return;
     const context = this.scaled.getContext('2d');
     if (!context) return;
-    this.scaled.height = Math.round(this.scaled.width * source.height / source.width);
+    const height = Math.round(this.scaled.width * source.height / source.width);
+    if (this.scaled.height !== height) this.scaled.height = height;
     context.drawImage(source, 0, 0, this.scaled.width, this.scaled.height);
+    this.lastEncoded = now;
     this.encoding = true;
-    this.scaled.toBlob(blob => { this.encoding = false; if (blob) this.channel.postMessage({ type: 'frame', blob }); }, 'image/jpeg', 0.8);
+    this.scaled.toBlob(blob => { this.encoding = false; if (blob && !this.closed) this.channel.postMessage({ type: 'frame', blob }); }, 'image/jpeg', 0.8);
   }
-  close(): void { this.channel.close(); }
+  close(): void { this.closed = true; this.channel.close(); }
 }
 
 /** Camera Preview widget, 200 × 180 (Statheros 2): bunny header, mirrored camera with landmarks, status/pen footer. */

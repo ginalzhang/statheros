@@ -131,7 +131,7 @@ function VoiceTab({ status, voice, keySource, run }: { status: ProbeStatus; voic
     <div className="modal-group">
       <h2>Voice Controls</h2>
       {/* Shows actual activation (capture open), not only the request. Voice never stops camera or motion. */}
-      <div className="modal-row"><span id="voice-commands-label">Voice Commands</span><button className="switch" role="switch" aria-checked={!off} aria-labelledby="voice-commands-label" disabled={voice.state === 'DISABLED'} onClick={() => run(() => window.steady.microphone(off))}><span /></button></div>
+      <div className="modal-row"><span id="voice-commands-label">Voice Commands</span><button className="switch" role="switch" aria-checked={voice.captureOpen} aria-labelledby="voice-commands-label" disabled={voice.state === 'DISABLED'} onClick={() => run(() => window.steady.microphone(off))}><span /></button></div>
     </div>
     <div className="modal-group">
       <h2>Cartesia Voice AI</h2>
@@ -150,7 +150,7 @@ function VoiceTab({ status, voice, keySource, run }: { status: ProbeStatus; voic
     </div>
     <div className="modal-group">
       <h2>Microphone Test</h2>
-      <p className="field-hint">Check that your microphone and voice recognition can hear you.</p>
+      <p className="field-hint">Check microphone volume and audio sample delivery. This test does not recognize speech.</p>
       <div className="modal-row start">
         <button className="selected-button" disabled={testing} onClick={() => run(async () => { setTesting(true); try { setTest(await window.steady.voiceSelfTest()); } finally { setTesting(false); } })}>Test Microphone</button>
         <Pill {...result} />

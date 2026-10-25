@@ -1,5 +1,4 @@
 import type { Mode, TrackingSample } from '../shared/contracts';
-import { LiftGesture, palmSize, type LiftGestureConfig } from './tracking';
 import { DEFAULT_ORIENTATION, displayLandmarks, drawLandmarkOverlay, drawMirroredPreview, edgeProximity, FrameGate, FrameProgress, orientPoint, SampleGate, SelectedHandContinuity, type Edge, type HandLabel, type Landmark, type Orientation, type PreviewOverlay } from './tracking';
 
 export interface ProbeReport {
@@ -12,10 +11,6 @@ export interface ProbeReport {
   rejection?: string | null;
   /** Frame edge the tracked points are about to leave (display coordinates), or null. */
   edge?: Edge | null;
-  /** Palm mode: how much larger the palm looks than at rest (0.25 = 25 % larger), when a rest size is set. */
-  lift?: number | null;
-  /** Rest/lift gesture state when the gesture is enabled. */
-  penGesture?: 'rest' | 'lift' | null;
 }
 /** Camera ownership stays in the panel window, including while settings is closed/collapsed. */
 export class CameraProbe {
@@ -36,6 +31,11 @@ export class CameraProbe {
   private validFrames = 0;
   private staleFrames = 0;
   private durations: number[] = [];
+  private durationIndex = 0;
+  private percentileAt = -Infinity;
+  private inferenceMsP95 = 0;
+  private reportAt = -Infinity;
+  private reportKey = '';
   private pending: { frameId: number; generation: number; timestamp: number; sent: number } | null = null;
   private delegate: string | null = null;
   private mode: Mode = 'head';
@@ -44,12 +44,6 @@ export class CameraProbe {
   private rejection: string | null = null;
   private edge: Edge | null = null;
   private orientation: Orientation = DEFAULT_ORIENTATION;
-  private gesture: LiftGesture | null = null;
-  private gestureEnabled = false;
-  private lift: number | null = null;
-  private sizeSamples: number[] | null = null;
-  /** Rest/lift transitions while the gesture is enabled (the panel forwards them to main). */
-  onPenGesture: ((state: 'rest' | 'lift') => void) | null = null;
   constructor(private generation: () => number, private report: (value: ProbeReport) => void, private sample: (value: TrackingSample) => void, private fault: (reason: 'lost' | 'failed') => void) {}
   setSelectedHand(label: HandLabel | null, confirmed = false): void {
     this.configuredHand = label; this.continuity.setSelectedHand(label, confirmed);
@@ -61,33 +55,24 @@ export class CameraProbe {
     return confirmed;
   }
   preview(canvas: HTMLCanvasElement | null): void { this.canvas = canvas; }
-  /** Rest size + threshold for the lift readout; `enabled` turns the pen gesture on. Null clears it. */
-  setPenGesture(config: (LiftGestureConfig & { enabled: boolean }) | null): void {
-    const same = config && this.gesture && this.gesture.config.restSize === config.restSize && this.gesture.config.threshold === config.threshold;
-    if (!same) this.gesture = config ? new LiftGesture({ restSize: config.restSize, threshold: config.threshold }) : null;
-    this.gestureEnabled = Boolean(config?.enabled);
-    if (!config) this.lift = null;
-  }
-  /** Median palm size over `ms` of valid Palm frames: the resting-hand reference for the gesture. */
-  measureRest(ms = 1500): Promise<number> {
-    if (this.mode !== 'palm' || !this.worker) return Promise.reject(new Error('Start the camera in Palm mode first.'));
-    this.sizeSamples = [];
-    return new Promise((resolve, reject) => setTimeout(() => {
-      const values = (this.sizeSamples ?? []).sort((a, b) => a - b); this.sizeSamples = null;
-      if (values.length < 15) { reject(new Error('Not enough hand frames — rest your hand in view and try again.')); return; }
-      resolve(values[Math.floor(values.length / 2)]!);
-    }, ms));
-  }
   /** Called after each preview frame is drawn (video plus landmark overlay). */
   previewDrawn: ((canvas: HTMLCanvasElement) => void) | null = null;
   /** Camera orientation for unusual mounts; applied to anchors, overlay and preview alike. */
   setOrientation(orientation: Orientation): void { this.orientation = { flipX: orientation.flipX, flipY: orientation.flipY }; }
   private emit(message: string, running = true): void {
-    const sorted = [...this.durations].sort((a, b) => a - b);
+    const now = performance.now();
+    const key = JSON.stringify([message, running, this.mode, this.delegate, this.continuity.selectedHand, this.continuity.confirmationRequired, this.rejection, this.edge, this.format.deviceId]);
+    if (key === this.reportKey && now - this.reportAt < 100) return;
+    this.reportKey = key; this.reportAt = now;
+    if (now - this.percentileAt >= 1000) {
+      const sorted = [...this.durations].sort((a, b) => a - b);
+      this.inferenceMsP95 = sorted.length ? sorted[Math.ceil(sorted.length * 0.95) - 1]! : 0;
+      this.percentileAt = now;
+    }
     this.report({ mode: this.mode, message, frames: this.frame, delegate: this.delegate, running,
       selectedHand: this.continuity.selectedHand, confirmationRequired: this.continuity.confirmationRequired,
       cameraId: this.format.deviceId, width: this.format.width, height: this.format.height, frameRate: this.format.frameRate,
-      validFrames: this.validFrames, staleFrames: this.staleFrames, inferenceMsP95: sorted.length ? sorted[Math.ceil(sorted.length * 0.95) - 1] : 0, rejection: this.rejection, edge: this.edge, lift: this.lift, penGesture: this.gestureEnabled ? this.gesture?.state ?? null : null });
+      validFrames: this.validFrames, staleFrames: this.staleFrames, inferenceMsP95: this.inferenceMsP95, rejection: this.rejection, edge: this.edge });
   }
   async start(cameraId: string, mode: Mode): Promise<void> {
     this.stop(); this.mode = mode;
@@ -129,13 +114,12 @@ export class CameraProbe {
           if (!pending || raw.frameId !== pending.frameId || raw.generation !== pending.generation || raw.captureTimestamp !== pending.timestamp) return;
           this.pending = null; this.gate.release();
           const now = performance.now();
-          this.durations.push(now - pending.sent); if (this.durations.length > 1800) this.durations.shift();
+          this.durations[this.durationIndex] = now - pending.sent; this.durationIndex = (this.durationIndex + 1) % 1800;
           if (!this.results.accept(raw, this.generation(), mode, now)) { this.staleFrames++; this.emit('Stale inference result rejected'); return; }
           let output = raw;
           if (mode === 'palm') {
             const wasConfirmationRequired = this.continuity.confirmationRequired;
             const result = this.continuity.observe({ valid: raw.valid, anchor: raw.anchor, reason: raw.qualityReason }, raw.selectedHand ?? null, raw.captureTimestamp, now);
-            this.configuredHand = this.continuity.selectedHand;
             if (!wasConfirmationRequired && this.continuity.confirmationRequired) this.fault('lost');
             // Retain the first selected label across explicit restarts. A new
             // camera/mode selection is the only caller that deliberately clears it.
@@ -147,14 +131,6 @@ export class CameraProbe {
           const landmarks = Array.isArray(value.landmarks) ? (value.landmarks as Landmark[]) : [];
           this.overlay = { mode, landmarks, valid: output.valid, receivedAt: now, orientation: this.orientation };
           this.edge = edgeProximity(displayLandmarks(landmarks, this.orientation), mode);
-          if (mode === 'palm') {
-            const aspect = (this.format.width ?? 640) / (this.format.height ?? 480);
-            const size = output.valid ? palmSize(landmarks, aspect) : null;
-            if (size !== null) this.sizeSamples?.push(size);
-            this.lift = size !== null && this.gesture ? this.gesture.ratio(size) : null;
-            const change = this.gesture?.update(size, now);
-            if (change && this.gestureEnabled) this.onPenGesture?.(change);
-          }
           this.sample(output); this.emit(output.qualityReason);
         } else if (value.type === 'fault') this.fail(String(value.message));
       };
@@ -193,9 +169,7 @@ export class CameraProbe {
     this.video = null; this.frameCallback = undefined;
     this.canvas?.getContext('2d')?.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.gate = new FrameGate(); this.progress = new FrameProgress(); this.results = new SampleGate(); this.pending = null;
-    this.frame = 0; this.validFrames = 0; this.staleFrames = 0; this.durations = []; this.delegate = null; this.format = {}; this.overlay = null; this.rejection = null; this.edge = null;
+    this.reportAt = -Infinity; this.reportKey = ''; this.frame = 0; this.validFrames = 0; this.staleFrames = 0; this.durations = []; this.durationIndex = 0; this.percentileAt = -Infinity; this.inferenceMsP95 = 0; this.delegate = null; this.format = {}; this.overlay = null; this.rejection = null; this.edge = null;
     this.continuity.setSelectedHand(this.configuredHand, false);
-    if (this.gesture) this.gesture = new LiftGesture(this.gesture.config); // first reading after a restart is a fresh transition
-    this.lift = null; this.sizeSamples = null;
   }
 }

@@ -1,5 +1,7 @@
 # Voice report (prompt §14 "Done", §17)
 
+> Historical measurements and checklist for the original wake-word implementation. They do not measure current command-word/open-mic recognition. The current behavior and live validation checklist are in [README.md](README.md).
+
 **Built:** M0, M1, M2a and the M2b code paths: the pure state machine (§5, §8), Auto and Manual Cartesia sessions, transcript builders, the cloud-gated Forwarder, ring buffer and pre-roll, sherpa-onnx wake word with local "stop", Silero VAD (energy fallback), the post-processor (§9), the single-worker executor with the `cmd_id` guard, startup probe, PID lock, earcons, cloud dot, transcript line, mute, self-test and latency report. `eager_commit` is implemented but **off** (the M2b measurement decides). `stt.wake_endpoint = auto`.
 
 **Not done and needs a human with a real key and mic:** the live smoke test, the M2b endpoint measurement table, and the check that `close` flushes a trailing `turn.end`. They are blocked on a `CARTESIA_API_KEY` and a person at the mic. Until measured, the defaults stand: `auto`, `eager_commit: false`, `auto_forced_end: close`.

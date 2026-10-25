@@ -4,7 +4,7 @@
 
 Steady is a working prototype of a local macOS drawing companion for Krita on Apple Silicon/macOS 26+. It maps camera-based head or palm tracking across the selected display and limits drawing to a configured canvas rectangle. It provides drawing controls through a floating panel and configurable global keys, with five-position calibration, Accessibility-based canvas detection, mouse selection, explicit real-input opt-in, and pause/recovery controls.
 
-Physical-camera, live voice, and Krita acceptance remain partially unverified. Voice starts with the microphone off; Apple speech-asset installation is unused. Generic shortcut profiles are configuration previews; native execution supports the fixed Krita profile.
+Physical-camera, live voice, and Krita acceptance remain partially unverified. One instance runs per application profile. Voice models load when the microphone is first enabled; voice starts with the microphone off; Apple speech-asset installation is unused. Generic shortcut profiles are configuration previews; native execution supports the fixed Krita profile.
 
 ## Development
 
@@ -71,6 +71,6 @@ Settings also offers a bounded real-input probe in the packaged app. Confirm a d
 - Relaxed desk-facing palm tracking remains unverified; earlier validation used a raised hand.
 - The 10-second warmup and 60-second baseline measure renderer mapping rate and receipt-to-map processing time. Camera inference p95 measures bitmap dispatch to result receipt. These do not establish native-event or perceived smoothing latency.
 - Local drawing keywords can execute mid-sentence while Voice Commands is enabled, and other speech near the mic is sent to Cartesia: mute when you don't want to be heard. Open mic and push-to-talk use Cartesia; optional Claude interpretation uses `ANTHROPIC_API_KEY` or the macOS Keychain. Apple speech assets are unused. Live recognition and speech timing remain unverified. See [voice setup](docs/voice/README.md).
-- No camera frames, recordings, or transcripts are persisted. Retained speech timing diagnostics contain identifiers and counters only.
+- No camera frames, recordings, or transcripts are persisted. Voice timing logs contain identifiers and counters only. Voice and tracking logs are buffered asynchronously and each retain at most two 1 MB files.
 
 Historical plans, reviews, operator checklists, and execution evidence are preserved locally in `.archive/plan/`. `.archive/` is ignored by Git and is not included in fresh checkouts. These records describe earlier development milestones; this README describes the current working prototype.

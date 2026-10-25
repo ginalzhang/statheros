@@ -2,6 +2,7 @@
 // sherpa-onnx addon outside ASAR for packaging (resources/voice/addon). Hashes are pinned in
 // resources/voice/manifest.json. `--fetch` downloads; without it, files are only verified.
 import { createHash } from 'node:crypto';
+import { hashFile, stageAddon } from './asset-utils.mjs';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
@@ -20,7 +21,12 @@ const fetching = process.argv.includes('--fetch');
 mkdirSync(models, { recursive: true });
 
 for (const archive of manifest.archives) {
-  const missing = archive.files.some(file => !existsSync(path.join(models, file.path)) || sha(readFileSync(path.join(models, file.path))) !== file.sha256);
+  const verified = new Set();
+  if (fetching) for (const file of archive.files) {
+    const filename = path.join(models, file.path);
+    if (existsSync(filename) && await hashFile(filename) === file.sha256) verified.add(file.path);
+  }
+  const missing = verified.size !== archive.files.length;
   if (missing && fetching) {
     const bytes = await fetchBytes(archive.source);
     if (sha(bytes) !== archive.sha256) throw new Error(`Voice archive hash mismatch: ${archive.source}`);
@@ -28,6 +34,7 @@ for (const archive of manifest.archives) {
     try {
       writeFileSync(path.join(scratch, 'archive.tar.bz2'), bytes);
       execFileSync('tar', ['xjf', 'archive.tar.bz2', ...archive.files.map(file => `${archive.root}/${file.from}`)], { cwd: scratch });
+      verified.clear();
       for (const file of archive.files) {
         const destination = path.join(models, file.path);
         mkdirSync(path.dirname(destination), { recursive: true });
@@ -36,24 +43,22 @@ for (const archive of manifest.archives) {
     } finally { rmSync(scratch, { recursive: true, force: true }); }
   }
   for (const file of archive.files) {
-    const actual = sha(readFileSync(path.join(models, file.path)));
+    const actual = verified.has(file.path) ? file.sha256 : await hashFile(path.join(models, file.path));
     if (actual !== file.sha256) throw new Error(`Voice asset hash mismatch: ${file.path}`);
     console.log(`verified voice/${file.path}`);
   }
 }
 for (const file of manifest.files) {
   const destination = path.join(models, file.path);
-  if (fetching && (!existsSync(destination) || sha(readFileSync(destination)) !== file.sha256)) writeFileSync(destination, await fetchBytes(file.source));
-  if (sha(readFileSync(destination)) !== file.sha256) throw new Error(`Voice asset hash mismatch: ${file.path}`);
+  let actual = existsSync(destination) ? await hashFile(destination) : null;
+  if (fetching && actual !== file.sha256) {
+    const bytes = await fetchBytes(file.source); actual = sha(bytes);
+    if (actual !== file.sha256) throw new Error(`Voice asset hash mismatch: ${file.path}`);
+    writeFileSync(destination, bytes);
+  }
+  if (actual !== file.sha256) throw new Error(`Voice asset hash mismatch: ${file.path}`);
   console.log(`verified voice/${file.path}`);
 }
 // Native addon (+ its dylibs) must live outside ASAR; resolved by createRequire at runtime.
-const addon = path.join(root, 'addon', 'node_modules');
-rmSync(path.join(root, 'addon'), { recursive: true, force: true });
-for (const name of manifest.addon) {
-  const source = path.join('node_modules', name);
-  if (!existsSync(source)) throw new Error(`Missing ${source}; run npm ci`);
-  cpSync(source, path.join(addon, name), { recursive: true });
-}
-writeFileSync(path.join(root, 'addon', 'index.js'), '// createRequire anchor for the packaged voice addon\n');
-console.log('staged voice addon');
+const staged = await stageAddon('node_modules', path.join(root, 'addon'), manifest.addon);
+console.log(staged ? 'staged voice addon' : 'verified existing voice addon');

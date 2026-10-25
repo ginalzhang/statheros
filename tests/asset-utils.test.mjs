@@ -1,0 +1,23 @@
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, expect, it } from 'vitest';
+import { stageAddon } from '../scripts/asset-utils.mjs';
+let root;
+afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); });
+it('preserves correct addon staging and repairs changed or extra files', async () => {
+  root = mkdtempSync(path.join(os.tmpdir(), 'steady-stage-'));
+  const source = path.join(root, 'source'), destination = path.join(root, 'addon');
+  mkdirSync(path.join(source, 'example'), { recursive: true });
+  writeFileSync(path.join(source, 'example/index.js'), 'original');
+  expect(await stageAddon(source, destination, ['example'])).toBe(true);
+  const file = path.join(destination, 'node_modules/example/index.js'), before = statSync(file);
+  expect(await stageAddon(source, destination, ['example'])).toBe(false);
+  expect(statSync(file).ino).toBe(before.ino);
+  writeFileSync(file, 'corrupt!');
+  expect(await stageAddon(source, destination, ['example'])).toBe(true);
+  expect(readFileSync(file, 'utf8')).toBe('original');
+  writeFileSync(path.join(destination, 'node_modules/example/extra'), 'stale');
+  expect(await stageAddon(source, destination, ['example'])).toBe(true);
+  await expect(stageAddon(source, destination, ['missing'])).rejects.toThrow('Missing');
+});

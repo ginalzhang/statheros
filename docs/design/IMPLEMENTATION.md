@@ -7,7 +7,7 @@ The current source of truth is the **Statheros 2** design: the 35 frames and com
 | Surface | Implementation |
 |---|---|
 | Compact control panel (300 px) | Its own window. The header has the bunny and "Statheros", then **Pause/Play** (`pause` / `resume`), **Tune** (sliders icon, opens Settings), **chevron** (`togglePanel`) and **Close** (quit). The sections are Tracking, Input, Stroke Assistance, Motion Assistance, Voice, Canvas and Actions. |
-| Camera Preview (200 × 180) | A separate movable window. It has its own bunny header, the live mirrored preview with landmarks and a status/pen footer. The panel still owns the camera: it draws off-screen and streams JPEG frames over a `BroadcastChannel`. Moving it never moves the panel. |
+| Camera Preview (200 × 180) | A separate movable window. It has its own bunny header, the live mirrored preview with landmarks and a status/pen footer. The panel still owns the camera: it draws off-screen and streams JPEG frames at up to 15 fps over a `BroadcastChannel`; tracking inference remains independent. Moving it never moves the panel. |
 | Settings modal (~860 × 690) | A frameless window over Krita, next to the panel. It has three tabs: **Motion**, **Voice** and **Appearance**. X closes it without resetting values. Opening it pauses input, as before. |
 | Notifications | A click-through window in the upper left. It **replaces the floating toolbar**. |
 | Advanced settings | The former settings page, opened from "Advanced settings…" in the modal footer. See the conflicts below. |

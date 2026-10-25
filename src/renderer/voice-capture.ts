@@ -10,10 +10,10 @@ export class VoiceCapture {
   private stream: MediaStream | null = null;
   private context: AudioContext | null = null;
   private run = 0;
+  private readonly onDeviceChange = (): void => { if (this.stream) { this.deviceChanged(); void this.open(); } };
   constructor(private readonly frame: (pcm: ArrayBuffer) => void, private readonly failed: (reason: string) => void, private readonly opened: () => void, private readonly deviceChanged: () => void) {
-    navigator.mediaDevices.addEventListener('devicechange', () => { if (this.stream) { this.deviceChanged(); void this.open(); } });
+    navigator.mediaDevices.addEventListener('devicechange', this.onDeviceChange);
   }
-  get isOpen(): boolean { return this.stream !== null; }
   async open(): Promise<void> {
     this.close();
     const run = ++this.run;
@@ -25,7 +25,7 @@ export class VoiceCapture {
       await context.audioWorklet.addModule(workletUrl);
       if (run !== this.run) { stream.getTracks().forEach(track => track.stop()); void context.close(); return; }
       const node = new AudioWorkletNode(context, 'steady-voice-tap', { numberOfInputs: 1, numberOfOutputs: 1 });
-      node.port.onmessage = event => this.frame(event.data as ArrayBuffer);
+      node.port.onmessage = event => { if (run === this.run) this.frame(event.data as ArrayBuffer); };
       // A silent sink keeps the graph pulled; nothing is audible.
       const sink = context.createGain(); sink.gain.value = 0;
       context.createMediaStreamSource(stream).connect(node).connect(sink).connect(context.destination);
@@ -44,6 +44,10 @@ export class VoiceCapture {
     this.stream?.getTracks().forEach(track => track.stop());
     void this.context?.close().catch(() => undefined);
     this.stream = null; this.context = null;
+  }
+  dispose(): void {
+    navigator.mediaDevices.removeEventListener('devicechange', this.onDeviceChange);
+    this.close();
   }
 }
 
@@ -80,4 +84,9 @@ export class Earcons {
     } catch { this.stopped(playId); } // an earcon failure is logged by gate_cap, never raised
   }
   stopAll(): void { for (const source of this.playing.values()) { try { source.stop(); } catch { /* ended */ } } }
+  dispose(): void {
+    for (const source of this.playing.values()) source.onended = null;
+    this.stopAll(); this.playing.clear();
+    void this.context.close().catch(() => undefined);
+  }
 }

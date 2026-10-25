@@ -28,7 +28,6 @@ const emptyMetrics = (): TrackingProbeMetrics => ({ frames: 0, validFrames: 0, m
 /** Panel-owned workflow, never sends input actions. Saved configuration is its only durable state. */
 export class SetupController {
   private settings: SettingsV1 | null = null;
-  private display: DisplayInfo | null = null;
   private generation = 0;
   private context = '';
   private engine: TrackingEngine | null = null;
@@ -39,6 +38,7 @@ export class SetupController {
   private baselineFinishTimer: ReturnType<typeof setTimeout> | undefined;
   private baselineStart: number | null = null;
   private latencies: number[] = [];
+  private percentileDirty = false;
   private lastEmit = -Infinity;
   state: SetupSnapshot = { autoCapture: true, step: null, active: false, calibrating: false, recentering: false, message: 'Select a camera and start tracking, then calibrate.', calibration: null, position: null, guide: null, metrics: emptyMetrics(), baseline: 'idle' };
   get autoCapture(): boolean { return this.state.autoCapture; }
@@ -54,9 +54,9 @@ export class SetupController {
     const geometry = display ? [display.id, display.bounds.x, display.bounds.y, display.bounds.width, display.bounds.height, display.scaleFactor] : null;
     const key = JSON.stringify([settings.cameraId, settings.mode, settings.calibrations, geometry, generation]);
     if (key === this.context) return;
-    this.cancel(false); this.context = key; this.settings = settings; this.display = display ?? null; this.generation = generation;
+    this.cancel(false); this.context = key; this.settings = settings; this.generation = generation;
     const calibration = settings.calibrations.find(c => c.cameraId === settings.cameraId && c.mode === settings.mode) ?? null;
-    this.state = { ...this.state, calibration, position: null, metrics: emptyMetrics(), baseline: 'idle', message: calibration ? 'Saved calibration loaded. Input paused; canvas confirmation requires Phase 03.' : 'Calibration required for this camera and mode.' };
+    this.state = { ...this.state, calibration, position: null, metrics: emptyMetrics(), baseline: 'idle', message: calibration ? 'Saved calibration loaded. Input paused; confirm the canvas before drawing.' : 'Calibration required for this camera and mode.' };
     this.engine = calibration && display ? new TrackingEngine(calibration, display.bounds, generation) : null;
     this.emit();
   }
@@ -104,12 +104,12 @@ export class SetupController {
   cancel(emit = true): void {
     clearTimeout(this.timer); this.timer = undefined; this.session?.cancel(); this.session = null; this.recenter = null;
     this.state.active = false; this.state.calibrating = false; this.state.recentering = false; this.state.step = null; this.state.baseline = 'idle'; this.state.guide = null; this.hold = [];
-    this.engine?.reset(); this.baselineStart = null; clearTimeout(this.baselineWarmupTimer); clearTimeout(this.baselineFinishTimer);
+    this.engine?.reset(); this.baselineStart = null; this.percentileDirty = false; clearTimeout(this.baselineWarmupTimer); clearTimeout(this.baselineFinishTimer);
     if (emit) { this.state.message = 'Calibration cancelled; input paused.'; this.emit(); }
   }
   startBaseline(): void {
     if (!this.engine) throw new Error('Complete calibration and select a display before measuring.');
-    this.baselineStart = performance.now(); this.latencies = []; this.state.metrics = emptyMetrics(); this.state.baseline = 'warmup'; this.emit();
+    this.baselineStart = performance.now(); this.latencies = []; this.percentileDirty = false; this.state.metrics = emptyMetrics(); this.state.baseline = 'warmup'; this.emit();
     clearTimeout(this.baselineWarmupTimer); clearTimeout(this.baselineFinishTimer);
     this.baselineWarmupTimer = setTimeout(() => { this.state.baseline = 'measuring'; this.emit(); }, 10_000);
     this.baselineFinishTimer = setTimeout(() => this.finishBaseline(), 70_000);
@@ -127,20 +127,19 @@ export class SetupController {
       const elapsed = received - started - 10_000;
       if (elapsed >= 0 && elapsed < 60_000) {
         this.state.baseline = 'measuring';
-        const m = this.state.metrics; m.frames++; if (sample.valid) m.validFrames++; if (position) { m.mappedFrames++; this.latencies.push(performance.now() - received); }
+        const m = this.state.metrics; m.frames++; if (sample.valid) m.validFrames++; if (position) { m.mappedFrames++; this.latencies.push(performance.now() - received); this.percentileDirty = true; }
         m.elapsedMs = elapsed; m.mappingHz = elapsed > 0 ? m.mappedFrames * 1000 / elapsed : 0;
-        const sorted = [...this.latencies].sort((a, b) => a - b); m.receiptToMappedP95Ms = sorted.length ? sorted[Math.ceil(sorted.length * .95) - 1]! : null;
         m.position = position ?? null; m.reason = result?.reason ?? 'Calibration required';
       } else if (elapsed >= 60_000) {
         this.finishBaseline();
       }
     }
-    if (received - this.lastEmit >= 100 || this.state.baseline === 'complete') { this.lastEmit = received; this.emit(); }
+    if (received - this.lastEmit >= 100) { this.lastEmit = received; this.emit(); }
   }
   private finishBaseline(): void {
     if (this.baselineStart === null) return;
     this.state.metrics.elapsedMs = 60_000; this.state.metrics.mappingHz = this.state.metrics.mappedFrames / 60;
-    this.state.baseline = 'complete'; this.baselineStart = null; this.recorded(structuredClone(this.state.metrics)); this.emit();
+    this.state.baseline = 'complete'; this.baselineStart = null; this.emit(); this.recorded(structuredClone(this.state.metrics));
   }
   setAutoCapture(enabled: boolean): void { this.state.autoCapture = enabled; this.hold = []; if (this.state.guide) this.state.guide = { ...this.state.guide, auto: enabled }; this.emit(); }
   private prompt(step: CaptureStep): string {
@@ -175,5 +174,12 @@ export class SetupController {
     if (this.autoCapture && farEnough && steadyMs >= HOLD_MS - 40) this.capture();
   }
   snapshot(): SetupSnapshot { return structuredClone(this.state); }
-  private emit(): void { this.changed(this.snapshot()); }
+  private emit(): void {
+    if (this.percentileDirty) {
+      const sorted = [...this.latencies].sort((a, b) => a - b);
+      this.state.metrics.receiptToMappedP95Ms = sorted.length ? sorted[Math.ceil(sorted.length * .95) - 1]! : null;
+      this.percentileDirty = false;
+    }
+    this.changed(this.snapshot());
+  }
 }

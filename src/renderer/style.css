@@ -35,7 +35,6 @@ body:has(.panel) { background: transparent; }
 .panel-section { padding: 12px 16px 14px; border-bottom: 1px solid var(--border); }
 .panel-section h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
 .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 21px; font-size: 12.5px; }
-.row-actions { display: flex; align-items: center; gap: 10px; }
 .value { text-align: right; }
 .value.good { color: var(--mint); }
 .value.good.strong { font-weight: 500; }
@@ -175,9 +174,6 @@ dd { margin: 0; }
 .orientation .secondary { margin-top: 0; }
 .wrong-way { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: #FFF8EE; border-left: 3px solid #795323; }
 .wrong-way p { margin: 0 0 6px; }
-.advanced-canvas { margin: 10px 0; }
-.advanced-canvas summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
-.advanced-canvas summary:focus-visible { outline: 3px solid #9fe7ff; outline-offset: 2px; }
 .canvas-detection-status { font-size: 12px; color: var(--muted); }
 .canvas-diagnostics { margin: 10px 0; }
 .canvas-diagnostics summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
@@ -193,9 +189,8 @@ html.canvas-window, .canvas-window body, .canvas-window #root { width: 100%; hei
 .canvas-outline { position: absolute; border: 3px solid #9fe7ff; pointer-events: none; box-shadow: inset 0 0 0 1px #152631; }
 .canvas-outline span { position: absolute; left: 0; top: 0; padding: 7px 10px; background: #182126; color: #eff8fb; border-radius: 0 0 6px 0; white-space: nowrap; }
 
-.panel-section .settings-actions button, .advanced-canvas button, .canvas-diagnostics button, .canvas-selector-controls button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.panel-section .settings-actions button, .canvas-diagnostics button, .canvas-selector-controls button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .segmented button.armed { background: transparent; outline: 2px dashed var(--selected); outline-offset: -3px; font-weight: 500; }
-.pen-gesture h3 { font-size: 14px; margin: 16px 0 4px; }
 
 /* "Before you draw" checklist. */
 .ready .checklist { list-style: none; margin: 0 0 10px; padding: 0; }
@@ -220,7 +215,7 @@ html.canvas-window, .canvas-window body, .canvas-window #root { width: 100%; hei
 .toast-text span { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-4px); } }
 
-/* Settings modal (Statheros 2, ~860 × 690): tabs Motion · Voice · Appearance; fits without scrolling. */
+/* Settings modal (Statheros 2, ~860 × 690): tabs Motion · Voice · Appearance. */
 .settings-modal { display: flex; flex-direction: column; border-radius: 14px; -webkit-app-region: no-drag; user-select: auto; }
 .modal-header { flex-shrink: 0; display: flex; align-items: center; gap: 10px; height: 64px; padding: 0 16px 0 24px; border-bottom: 1px solid var(--border); -webkit-app-region: drag; }
 .modal-header h1 { margin: 0 18px 0 0; font-size: 22px; font-weight: 700; }

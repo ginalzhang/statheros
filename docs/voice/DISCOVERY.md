@@ -1,5 +1,7 @@
 # Voice discovery (prompt §3)
 
+> Historical discovery notes from the initial wake-word implementation. Source line references and `plan/PLAN.md` paths describe that earlier snapshot; the old plans are archived locally. Current voice behavior (including open mic, ordered commands and Claude interpretation) is documented in [README.md](README.md).
+
 1. **Stack.** Electron 45 + React 19 + Vite 8 (Forge 8), TypeScript strict, npm (`npm ci`, exact pins). Main process is Node; async via promises and the `ConfigurationQueue`. Swift helper (`native/`) owns native input over NDJSON stdio. **Electron column of §2 applies.**
 2. **Existing mic capture: none in TypeScript.** The camera stream is video-only (`src/renderer/probe.ts:56`). The only mic code is the deferred Swift `SpeechProbe` on `AVAudioEngine`/`SpeechAnalyzer` (`native/Sources/SteadyNative/SpeechProbe.swift:8`). The prompt forbids Apple frameworks, so the voice module creates the one capture stream in the panel renderer (`src/renderer/voice-capture.ts:20`); the native mic stays off (the helper is never sent `microphone: enabled`).
 3. **Existing audio output: none.** The app never speaks (no TTS), so the only playback is the module's own earcons, which bracket themselves with `PlaybackStarted`/`PlaybackStopped`.

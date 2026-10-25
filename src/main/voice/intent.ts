@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const execFileAsync = promisify(execFile);
 import { ACTIONS, type ActionID } from '../../shared/contracts';
 import { MAX_REPEAT, normalizePlan, type PlanStep } from './plan';
 
@@ -30,10 +32,12 @@ const STEP = { type: 'object', properties: { action: { type: 'string', enum: [..
 const SCHEMA = { type: 'object', properties: { steps: { type: 'array', items: STEP } }, required: ['steps'], additionalProperties: false };
 
 /** ANTHROPIC_API_KEY, else the key stored with `security add-generic-password -s org.steady.anthropic -a steady -w`. */
-export function anthropicKey(env: NodeJS.ProcessEnv = process.env): string | null {
+export async function anthropicKey(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
   if (env.ANTHROPIC_API_KEY?.trim()) return env.ANTHROPIC_API_KEY.trim();
-  const result = spawnSync('security', ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', 'steady', '-w'], { encoding: 'utf8', timeout: 2000 });
-  return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : null;
+  try {
+    const { stdout } = await execFileAsync('security', ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', 'steady', '-w'], { encoding: 'utf8', timeout: 2000 });
+    return stdout.trim() || null;
+  } catch { return null; }
 }
 
 export type IntentClient = Pick<Anthropic, 'messages'>;

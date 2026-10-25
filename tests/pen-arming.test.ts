@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { ENGAGE_RETRY_MS, OUTSIDE_CANVAS_CODES, PenArming } from '../src/main/pen-arming';
-import { LIFT_DEBOUNCE_MS, LiftGesture, palmSize } from '../src/renderer/tracking';
 import { defaultSettings, isSettingsV1 } from '../src/shared/settings';
 
 const hover = (inCanvas: boolean, buttonDown = false) => ({ native: 'HOVER' as const, buttonDown, inCanvas });
@@ -42,36 +41,7 @@ describe('armed pen', () => {
   });
 });
 
-describe('rest/lift gesture', () => {
-  it('measures an aspect-corrected palm size', () => {
-    const hand = Array.from({ length: 21 }, () => ({ x: 0.5, y: 0.5 }));
-    hand[0] = { x: 0.5, y: 0.7 }; hand[9] = { x: 0.5, y: 0.5 }; hand[5] = { x: 0.45, y: 0.5 }; hand[17] = { x: 0.55, y: 0.5 };
-    expect(palmSize(hand, 4 / 3)).toBeCloseTo((0.2 + 0.1 * 4 / 3) / 2);
-    expect(palmSize([], 1)).toBeNull();
-  });
-  it('switches with hysteresis and debounce; missing hands change nothing', () => {
-    const gesture = new LiftGesture({ restSize: 0.1, threshold: 0.2 });
-    expect(gesture.update(0.1, 0)).toBeNull();
-    expect(gesture.update(0.1, LIFT_DEBOUNCE_MS)).toBe('rest');
-    expect(gesture.update(0.115, 200)).toBeNull(); // between the bands: no change
-    expect(gesture.update(0.125, 300)).toBeNull();
-    expect(gesture.update(null, 350)).toBeNull(); // hand lost resets the pending reading
-    expect(gesture.update(0.125, 400)).toBeNull();
-    expect(gesture.update(0.125, 400 + LIFT_DEBOUNCE_MS)).toBe('lift');
-    expect(gesture.update(0.108, 700)).toBeNull(); // not yet below rest × 1.1
-    expect(gesture.update(0.105, 800)).toBeNull();
-    expect(gesture.update(0.105, 800 + LIFT_DEBOUNCE_MS)).toBe('rest');
-  });
-  it('a brief spike does not flip the pen', () => {
-    const gesture = new LiftGesture({ restSize: 0.1, threshold: 0.2 });
-    gesture.update(0.1, 0); gesture.update(0.1, 200);
-    expect(gesture.update(0.13, 300)).toBeNull();
-    expect(gesture.update(0.1, 350)).toBeNull();
-    expect(gesture.state).toBe('rest');
-  });
-});
-
-describe('pen gesture settings', () => {
+describe('retired pen gesture settings compatibility', () => {
   it('validates entries', () => {
     const base = defaultSettings();
     expect(isSettingsV1({ ...base, penGestures: [{ cameraId: 'cam', enabled: true, restSize: 0.12, threshold: 0.2 }] })).toBe(true);

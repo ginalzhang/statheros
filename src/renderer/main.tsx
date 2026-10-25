@@ -10,7 +10,7 @@ import { BunnyMark } from './logo';
 import { Icon } from './icons';
 import { activePreset, gainFromPercent, sensitivityPercent, STROKE_PRESETS } from './stroke-presets';
 import { edgeHint, rejectionHint } from './tracking';
-import { orientationFor, penGestureFor, PEN_GESTURE_DEFAULT_THRESHOLD } from '../shared/settings';
+import { orientationFor } from '../shared/settings';
 import { CanvasOutline, CanvasOverlay } from './canvas-overlay';
 import { CameraPreviewWindow, PreviewStreamer, ToastWindow, cameraState, initialProbe, initialStatus, trackingState, useTrackedButtons } from './utilities';
 import { Slider } from './controls';
@@ -92,14 +92,6 @@ function App(): React.JSX.Element {
         if (message?.type === 'confirmHand') void window.steady.localAction('confirmHand').catch(cause => setError(String(cause)));
         if (message?.type === 'baseline') execute(() => controller.startBaseline());
         if (message?.type === 'auto-capture' && typeof message.enabled === 'boolean') controller.setAutoCapture(message.enabled);
-        if (message?.type === 'measure-rest') {
-          const settings = statusRef.current.settings, cameraId = settings?.cameraId ?? '';
-          const current = penGestureFor(settings, cameraId);
-          void camera.measureRest()
-            .then(restSize => window.steady.savePenGesture({ cameraId, enabled: current?.enabled ?? false, restSize, threshold: current?.threshold ?? PEN_GESTURE_DEFAULT_THRESHOLD }))
-            .then(() => channel.postMessage({ type: 'rest-measured' }))
-            .catch(cause => { setError(String(cause)); channel.postMessage({ type: 'error', message: String(cause) }); });
-        }
         if (message?.type === 'tuning') execute(() => {
           const c = controller.state.calibration;
           if (c) void window.steady.saveCalibration({ ...c, gain: message.gain, smoothing: message.smoothing }).catch(cause => setError(String(cause)));
@@ -122,7 +114,6 @@ function App(): React.JSX.Element {
     if (isSettings) return;
     setupRef.current?.update(status.settings, status.displays.find(d => d.id === status.selectedDisplayId), status.generation);
     probeRef.current?.setOrientation(orientationFor(status.settings, status.settings?.cameraId ?? ''));
-    probeRef.current?.setPenGesture(null); // rest/lift retired: the pen lifts when the hand holds still
   }, [isSettings, status]);
 
   useEffect(() => window.steady.onLocalAction(id => {
@@ -181,12 +172,6 @@ function Panel({ status, probe, setup, feedback, action, voice, tune }: { status
         <h2 id="tracking-title">Tracking</h2>
         <div className="row"><span>{palm ? 'Hand Tracking' : 'Head Tracking'}</span><span className={`value tone-${tracking.tone}`} role="status">{tracking.label}</span></div>
         <div className="row"><span>Camera</span><span className={`value tone-${camera.tone}`}>{camera.label}</span></div>
-        <div className="row"><span>Canvas</span>
-          {status.canvasSetup?.active && status.canvasSetup.mode === 'legacy'
-            ? <span className="row-actions"><button className="link" data-action="markCorner" onClick={() => action('markCorner')}>Mark corner</button><button className="link" data-action="cancelCanvas" onClick={() => action('cancelCanvas')}>Cancel</button></span>
-            : <span className="row-actions"><span className={`value ${status.canvasConfirmed ? 'good' : 'muted'}`}>{status.canvasConfirmed ? 'Set' : 'Not set'}</span><button className="link" data-action="setCanvas" disabled={status.canvasSetup?.active && status.canvasSetup.mode === 'detect'} onClick={() => action('setCanvas')}>Set canvas</button></span>}
-        </div>
-        {status.canvasSetup && <p className="secondary" role="status">{status.canvasSetup.message}</p>}
         <button className="link" data-action="openSettings" onClick={() => action('openSettings')}>Recalibrate Tracking</button>
         {hint && <p className={`preview-hint${probe.confirmationRequired ? ' warn' : ''}`} role="status">{hint}</p>}
         {probe.confirmationRequired && <button className="confirm-hand" data-action="confirmHand" onClick={() => action('confirmHand')}>Confirm selected hand{probe.selectedHand ? ` (${probe.selectedHand})` : ''}</button>}
@@ -216,18 +201,6 @@ function Panel({ status, probe, setup, feedback, action, voice, tune }: { status
         {!calibration && <p className="secondary">Calibrate in Settings to adjust these.</p>}
       </section>
       {voice}
-      <section className="panel-section" aria-labelledby="canvas-title">
-        <h2 id="canvas-title">Canvas</h2>
-        <p role="status">{status.canvasSetup?.message ?? (status.canvasConfirmed ? 'Canvas confirmed · Resume required' : 'Canvas confirmation required')}</p>
-        <div className="settings-actions">
-          <button data-action="beginCanvas" onClick={() => action('beginCanvas')}>Detect canvas</button>
-          {status.canvasSetup?.workspaceSuggestion && <button data-action="reviewWorkspace" onClick={() => action('reviewWorkspace')}>Review suggested workspace</button>}
-          <button data-action="selectCanvas" onClick={() => action('selectCanvas')}>Select with mouse</button>
-          <button data-action="cancelCanvas" onClick={() => action('cancelCanvas')} disabled={!status.canvasSetup?.active}>Cancel canvas</button>
-        </div>
-        <CanvasDetectionStatus status={status} />
-        <details className="advanced-canvas"><summary>Advanced canvas setup</summary><p>Use tracking and F8 to mark corners.</p><button data-action="beginLegacyCanvas" onClick={() => action('beginLegacyCanvas')}>Mark corners with tracking</button></details>
-      </section>
       <section className="panel-section" aria-labelledby="actions-title">
         <h2 id="actions-title">Actions</h2>
         <div className="action-pair">
@@ -302,28 +275,6 @@ function CalibrationGuideView({ setup, probe, mode, status, run }: { setup: Setu
     <p>{setup.active ? 'Capturing — keep holding…' : !guide ? 'Show your hand to the camera.' : guide.farEnough ? `Far enough — hold still${guide.auto ? ` (${Math.min(1, guide.steadyMs / 1000).toFixed(1)} / 1.0 s)` : ', then press Capture'}` : guide.step === 'neutral' ? 'Show your hand and rest it in a comfortable middle position.' : `${stepLabel(guide.step)}: keep going a little — a short move is enough`}</p>
     {edge && <p className="error">{edge}</p>}
     {guide?.wrongWay && <WrongWay step={guide.step} status={status} run={run} />}
-  </div>;
-}
-
-/** Opt-in rest/lift pen gesture (Palm mode, overhead camera): rest = pen down, lift = pen up. */
-function PenGestureSettings({ status, probe, mode, run, send }: { status: ProbeStatus; probe: ProbeReport; mode: Mode; run: (work: () => Promise<void>) => void; send: (type: string, extra?: Record<string, unknown>) => void }): React.JSX.Element | null {
-  if (mode !== 'palm') return null;
-  const cameraId = status.settings?.cameraId ?? '';
-  const setting = penGestureFor(status.settings, cameraId);
-  const save = (patch: { enabled?: boolean; threshold?: number }): void => { if (setting) run(() => window.steady.savePenGesture({ ...setting, ...patch })); };
-  const lifted = probe.lift == null ? '—' : `${Math.round(probe.lift * 100)} %`;
-  return <div className="pen-gesture">
-    <h3>Pen gesture</h3>
-    <p>Rest your hand on the desk to put the pen down; lift it toward the camera to lift the pen. The pen only presses inside the canvas, and after Resume you lift and rest once to start. Pen Down, F8 and voice keep working.</p>
-    <div className="settings-actions">
-      <button disabled={!probe.running || !cameraId} onClick={() => send('measure-rest')}>{setting ? 'Re-measure resting hand' : 'Measure resting hand'}</button>
-      {setting && <button onClick={() => run(() => window.steady.savePenGesture({ cameraId, remove: true }))}>Remove</button>}
-    </div>
-    <label className="confirmation"><input type="checkbox" disabled={!setting} checked={Boolean(setting?.enabled)} onChange={event => save({ enabled: event.target.checked })} />Rest = pen down, lift = pen up{setting ? '' : ' (measure your resting hand first)'}</label>
-    {setting && <>
-      <label>Lift amount<input type="range" min={10} max={50} step={1} value={Math.round(setting.threshold * 100)} onChange={event => save({ threshold: Number(event.target.value) / 100 })} aria-valuetext={`${Math.round(setting.threshold * 100)} percent larger`} /></label>
-      <p role="status">Palm looks {lifted} larger than at rest · lifts above {Math.round(setting.threshold * 100)} % · {probe.penGesture === 'lift' ? 'lifted (pen up)' : probe.penGesture === 'rest' ? 'resting (pen down)' : 'waiting for your hand'}</p>
-    </>}
   </div>;
 }
 
@@ -457,8 +408,8 @@ function CanvasDetectionStatus({ status }: { status: ProbeStatus }): React.JSX.E
     {status.canvasSetup?.detection && <p role="status">{status.canvasSetup.detection.reason}</p>}
     {status.canvasSetup?.source === 'viewport' && <p>Using the drawing viewport, which may include gray workspace around the document.</p>}
     {status.canvasSetup?.source === 'manual' && <p>Manual bounds stay fixed on screen. Select again after zooming or panning when those changes cannot be observed.</p>}
-    {status.canvasSetup?.workspaceSuggestion && <p>A suggested workspace is available for review. It may include document tabs, rulers, or scrollbars. Choose Review suggested workspace on the panel to inspect it or drag a replacement before Use canvas.</p>}
-    {status.canvasSetup?.detection?.availability === 'unavailable' && <p>Use Select with mouse to choose the canvas. No screen capture or Krita plugin is used.</p>}
+    {status.canvasSetup?.workspaceSuggestion && <p>A suggested workspace is available for review. It may include document tabs, rulers, or scrollbars. Close Settings and choose Review &amp; use in the Before you draw checklist to inspect it or drag a replacement before Use canvas.</p>}
+    {status.canvasSetup?.detection?.availability === 'unavailable' && <p>Configure a Select with mouse shortcut in Commands and global bindings, then close Settings and use it to choose the canvas. No screen capture or Krita plugin is used.</p>}
     <details className="canvas-diagnostics">
       <summary>Canvas diagnostics</summary>
       <p>Copy window geometry and Accessibility structure to help troubleshoot detection or unexpected canvas changes. The report contains no screenshots or document text.</p>
@@ -484,11 +435,11 @@ function DrawingSetup({ status, run }: { status: ProbeStatus; run: (work: () => 
       <button onClick={() => run(() => window.steady.releaseInput())}>Emergency pause / release</button>
     </div>
     <p role="status">{status.canvasSetup?.message ?? (status.canvasConfirmed ? 'Canvas confirmed; Resume is required.' : 'Canvas confirmation required each launch.')}</p>
-    <p>Select a display, close Settings, and switch to Krita. Choose Detect canvas or Select with mouse on the companion panel. If a workspace suggestion is available, close Settings and choose Review suggested workspace on the panel. Inspect the highlight, which may include tabs, rulers, or scrollbars, or drag to replace it before Use canvas. For mouse selection, drag in either direction, review the rectangle, then Use canvas. Retry clears it for redrawing; Cancel or Escape leaves input paused. The rectangle must be at least 100 × 100 logical points and exclude this panel.</p>
+    <p>Select a display, close Settings, and switch to Krita. Choose Detect next to Canvas set in the Before you draw checklist. If a workspace suggestion is available, choose Review &amp; use in the checklist. For manual selection, configure a Select with mouse shortcut in Commands and global bindings before closing Settings, then use that shortcut. Inspect the highlight, which may include tabs, rulers, or scrollbars, or drag in either direction to replace it before Use canvas. Retry clears it for redrawing; Cancel or Escape leaves input paused. The rectangle must be at least 100 × 100 logical points and exclude this panel.</p>
     <CanvasDetectionStatus status={status} />
     <div className="settings-actions"><button onClick={() => run(() => window.steady.closeSettings())}>Close settings to set canvas</button><button disabled={!status.canvasSetup?.active} onClick={() => run(() => window.steady.cancelCanvas())}>Cancel canvas setup</button><button onClick={() => run(() => window.steady.closeSettings())}>Close settings before Resume</button></div>
     {status.canvas && <p>Canvas: {status.canvas.width.toFixed(0)} × {status.canvas.height.toFixed(0)} at ({status.canvas.x.toFixed(0)}, {status.canvas.y.toFixed(0)}).</p>}
-    <p>Canvas setup always ends paused. Complete calibration and explicitly Resume to draw. Display changes, camera/mode changes, foreground changes, sleep and tracking loss release input. Palm loss also requires Confirm selected hand. Advanced canvas setup retains tracked corner marking with F8.</p>
+    <p>Canvas setup always ends paused. Complete calibration and explicitly Resume to draw. Display changes, camera/mode changes, foreground changes, sleep and tracking loss release input. Palm loss also requires Confirm selected hand. Configure a Tracked corner setup shortcut in Commands and global bindings to use tracked corner marking with F8.</p>
   </section>;
 }
 

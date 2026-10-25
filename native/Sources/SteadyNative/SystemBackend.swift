@@ -2,7 +2,6 @@ import Foundation
 @preconcurrency import AppKit
 @preconcurrency import AVFoundation
 import ApplicationServices
-import Speech
 import SteadyCore
 
 final class SystemBackend: InputBackend, @unchecked Sendable {
@@ -13,15 +12,22 @@ final class SystemBackend: InputBackend, @unchecked Sendable {
  init(real:Bool){isReal=real}
  func permissions()->Permissions {
   func status(_ s:AVAuthorizationStatus)->String{switch s{case .authorized:return "authorized";case .denied:return "denied";case .restricted:return "restricted";case .notDetermined:return "notDetermined";@unknown default:return "unknown"}}
-  let speech:String
-  switch SFSpeechRecognizer.authorizationStatus(){case .authorized:speech="authorized";case .denied:speech="denied";case .restricted:speech="restricted";case .notDetermined:speech="notDetermined";@unknown default:speech="unknown"}
-  return Permissions(accessibility:AXIsProcessTrusted(),camera:status(AVCaptureDevice.authorizationStatus(for:.video)),microphone:status(AVCaptureDevice.authorizationStatus(for:.audio)),speech:speech)
+  return Permissions(accessibility:AXIsProcessTrusted(),camera:status(AVCaptureDevice.authorizationStatus(for:.video)),microphone:status(AVCaptureDevice.authorizationStatus(for:.audio)),speech:"unused")
  }
  @discardableResult func restoreTarget(pid:Int32)->Bool {guard let app=NSRunningApplication(processIdentifier:pid),app.bundleIdentifier=="org.krita",!app.isTerminated else{return false};return app.activate(options:[])}
  func kritaPid()->Int32? {NSRunningApplication.runningApplications(withBundleIdentifier:"org.krita").first?.processIdentifier}
  func foreground()->(bundle:String,pid:Int32)? {guard let app=NSWorkspace.shared.frontmostApplication,let bundle=app.bundleIdentifier else{return nil};return(bundle,app.processIdentifier)}
- func displays()->[DisplayInfo] {
-  var count:UInt32=0;guard CGGetActiveDisplayList(0,nil,&count) == .success else{return []};var ids=[CGDirectDisplayID](repeating:0,count:Int(count));guard CGGetActiveDisplayList(count,&ids,&count) == .success else{return []}
+ func displays()->[DisplayInfo] {displayInfos(includeSleeping:false)}
+ /// Fake desktop tests can use online geometry while the physical display sleeps.
+ /// Real input always uses the active-display list through displays().
+ func testDisplays()->[DisplayInfo] {displayInfos(includeSleeping:true)}
+ private func displayInfos(includeSleeping:Bool)->[DisplayInfo] {
+  var count:UInt32=0
+  let counted=includeSleeping ? CGGetOnlineDisplayList(0,nil,&count) : CGGetActiveDisplayList(0,nil,&count)
+  guard counted == .success else{return []}
+  var ids=[CGDirectDisplayID](repeating:0,count:Int(count))
+  let listed=includeSleeping ? CGGetOnlineDisplayList(count,&ids,&count) : CGGetActiveDisplayList(count,&ids,&count)
+  guard listed == .success else{return []}
   let primary=CGMainDisplayID();let mainHeight=CGDisplayBounds(primary).height
   return ids.prefix(Int(count)).map{id in
    let bounds=CGDisplayBounds(id)

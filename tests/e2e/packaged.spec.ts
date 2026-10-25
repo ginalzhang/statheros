@@ -12,7 +12,6 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     // Main-inspector evaluation can pause Electron's monotonic RTT measurement.
     // Wait through native startup via renderer IPC before inspecting the main VM.
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).nativeClockReady),{timeout:5000}).toBe(true);
-    await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).speechDiagnostics?.phase),{timeout:5000}).toBe('idle');
     const info=await app.evaluate(({BrowserWindow,app})=>{
       const w=BrowserWindow.getAllWindows().find(win=>new URL(win.webContents.getURL()).searchParams.get('view')==='panel')!;
       return {packaged:app.isPackaged,size:w.getSize(),focusable:w.isFocusable(),alwaysOnTop:w.isAlwaysOnTop(),allSpaces:w.isVisibleOnAllWorkspaces(),url:w.webContents.getURL()};
@@ -24,7 +23,6 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     await expect(page.evaluate(()=>window.steady.runNativeProbe())).rejects.toThrow('unavailable in fake tests');
     // Fake-test emergency control must stay on the fake release entry point.
     await page.evaluate(()=>window.steady.releaseInput());
-    expect(status.speechDiagnostics).toMatchObject({session:null,audioBuffers:0,transcriberResults:0,detectorResults:0,acceptedUtterances:0});
     expect(await page.evaluate(async()=>{try{await fetch('https://example.com/steady-outbound-probe');return false;}catch{return true;}})).toBe(true);
     // Chromium offline emulation proves bundled inference needs no fetch.
     // Physical network-off camera/telemetry evidence still requires an operator.

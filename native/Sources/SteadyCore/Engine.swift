@@ -172,8 +172,7 @@ public final class NativeEngine: @unchecked Sendable {
    restorePid=Int32(pid);resultCode="target-activation-requested"
   case "ping":return reply(req,accepted:true,code:"pong",now:now,extra:["senderTimestamp":p["senderTimestamp"] ?? .null,"displays":.encoded(reportedDisplays),"targetPid":discoveredTargetPid.map{.number(Double($0))} ?? .null])
   case "microphone":
-   // User deferred voice to Phase 04. Reject before Main can invoke TCC,
-   // allocate audio capture, or start the preserved speech implementation.
+   // Compatibility requests cannot enable native speech; Electron owns voice capture.
    guard p["enabled"]?.bool==false else{return reply(req,accepted:false,code:"voice-deferred-phase01",now:now)}
    return reply(req,accepted:true,code:"scheduled",now:now)
   case "installSpeechAssets":return reply(req,accepted:false,code:"voice-deferred-phase01",now:now)

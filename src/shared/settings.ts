@@ -4,9 +4,8 @@ import { isCalibrationV1, calibrationKey } from '../renderer/engine';
 
 /** Per-camera orientation for unusual mounts (e.g. overhead tripods). Absent = default (mirrored once). */
 export interface CameraOrientation { cameraId: string; flipX: boolean; flipY: boolean }
-/** Opt-in rest/lift pen gesture per camera (Palm mode): resting palm size and the lift threshold (fraction larger). */
+/** Retired rest/lift settings: accepted only to preserve existing settings-v1 files. */
 export interface PenGestureSetting { cameraId: string; enabled: boolean; restSize: number; threshold: number }
-export const PEN_GESTURE_DEFAULT_THRESHOLD = 0.2;
 /**
  * The last accepted canvas plus the Krita state it was accepted in (window frame, hashed document identity,
  * observed workspace/viewport). It is reapplied (still paused) only when Krita looks exactly the same again.
@@ -24,8 +23,7 @@ export function validRememberedCanvas(value: unknown): value is RememberedCanvas
   return Object.keys(c).length === 6 && Number.isSafeInteger(c.displayId) && (c.displayId as number) >= 0 && isRect(c.canvas) && isRect(c.windowBounds)
     && typeof c.windowToken === 'string' && c.windowToken.length > 0 && c.windowToken.length <= 256 && (c.workspace === null || isRect(c.workspace)) && (c.viewport === null || isRect(c.viewport));
 }
-export const penGestureFor = (settings: SettingsV1 | undefined, cameraId: string): PenGestureSetting | null => settings?.penGestures?.find(entry => entry.cameraId === cameraId) ?? null;
-export function validPenGesture(value: unknown): value is PenGestureSetting {
+function validPenGesture(value: unknown): value is PenGestureSetting {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const g = value as Record<string, unknown>;
   return Object.keys(g).length === 4 && typeof g.cameraId === 'string' && g.cameraId.length > 0 && g.cameraId.length <= 1024 && typeof g.enabled === 'boolean'

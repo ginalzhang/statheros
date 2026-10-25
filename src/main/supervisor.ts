@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { ClockSync, LineDecoder, validReply, validRequest } from './protocol';
 import type { Ack, NativeState, Reply, RequestPayloads, TrackingSample } from '../shared/contracts';
-import { SpeechDiagnosticDecoder } from './speech-diagnostics';
 
 export class NativeSupervisor extends EventEmitter {
   readonly session = randomUUID(); readonly clock = new ClockSync();
@@ -15,7 +14,6 @@ export class NativeSupervisor extends EventEmitter {
   private synchronizing = false;
   private pending = new Map<number, { resolve: (ack: Ack) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private refresh: ReturnType<typeof setInterval> | null = null;
-  private speechSession:string|null=null;private lastDiagnostic=-Infinity;
   constructor(readonly executable: string, readonly realInput: boolean, readonly testFakeBackend = false) { super(); }
   async start(): Promise<void> {
     const child = this.child = spawn(this.executable, this.realInput ? ['--real-input'] : this.testFakeBackend ? ['--test-fake-backend','--test-system-displays'] : [], { stdio: ['pipe','pipe','pipe'] });
@@ -24,8 +22,7 @@ export class NativeSupervisor extends EventEmitter {
     child.stdin.on('error', error => this.fail(`Native helper pipe closed: ${error.message}`));
     const decoder = new LineDecoder();
     child.stdout.on('data', chunk => { try { for (const value of decoder.push(chunk)) this.receive(value); } catch (error) { this.fail(String(error)); } });
-    const diagnostics=new SpeechDiagnosticDecoder();
-    child.stderr.on('data',chunk=>{for(const value of diagnostics.push(chunk,this.speechSession)){const now=performance.now();if(now-this.lastDiagnostic>=1000){this.lastDiagnostic=now;this.emit('speech-diagnostics',value);}}});
+    child.stderr.on('data', () => {}); // Drain diagnostics without retaining arbitrary helper output.
     child.on('error', error => this.fail(error.message));
     child.on('exit', () => { this.child = null; this.emergencyRelease(); if (!this.stopping) this.fail('Native helper exited; explicit restart required'); });
     const hello = await this.request('hello', { bundleId: 'org.steady.local' });
@@ -49,7 +46,7 @@ export class NativeSupervisor extends EventEmitter {
     } else if (reply.type === 'state') { this.state = reply.payload; this.emit('state', this.state); }
     else if (reply.type === 'fault') {this.emit('native-fault',reply.payload.code);this.fail(reply.payload.message);}
     else if (reply.type === 'canvasObservation') this.emit('canvas-observation', reply.payload);
-    else this.emit('speech', reply.payload);
+    // Retired v1 speech replies are validated but never dispatched.
   }
   request<K extends keyof RequestPayloads>(type: K, payload: RequestPayloads[K]): Promise<Ack> {
     const seq = ++this.seq;
@@ -60,7 +57,6 @@ export class NativeSupervisor extends EventEmitter {
       (this.stopping && type !== 'shutdown')) return Promise.reject(new Error('Native helper unavailable'));
     const configuration = type === 'configure';
     if (configuration) { this.configurationRequests++; this.sample = null; }
-    if(type==='microphone'){const control=payload as RequestPayloads['microphone'];this.speechSession=control.enabled?control.speechSession:null;this.lastDiagnostic=-Infinity;}
     return new Promise<Ack>((resolve,reject) => {
       const timer = setTimeout(() => { this.pending.delete(seq); reject(new Error('Native acknowledgment timeout')); this.fail('Native acknowledgment timeout'); }, 500);
       this.pending.set(seq, { resolve, reject, timer });

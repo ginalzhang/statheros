@@ -24,7 +24,9 @@ export class Forwarder {
   gate = false;
   private sink: AudioSink | null = null;
   private forwarding = false;
-  private pending = Buffer.alloc(0);
+  private pending: (Buffer | undefined)[] = [];
+  private pendingHead = 0;
+  private pendingBytes = 0;
   private queued = 0; // bytes ever queued for this sink
   private sent = 0;   // bytes sent or discarded
   private burst = 0;  // bytes allowed back-to-back
@@ -48,7 +50,7 @@ export class Forwarder {
   detach(): void {
     this.stopTick?.(); this.stopTick = null;
     this.sink = null; this.forwarding = false; this.padding = null;
-    this.pending = Buffer.alloc(0); this.queued = this.sent = this.burst = 0; this.controls = [];
+    this.clearPending(); this.queued = this.sent = this.burst = 0; this.controls = [];
   }
   get isForwarding(): boolean { return this.forwarding; }
 
@@ -58,7 +60,7 @@ export class Forwarder {
     this.forwarding = true;
     const backlog = this.ring.readFrom(fromTs);
     for (const frame of backlog) this.enqueue(frame.pcm);
-    this.burst = Math.min(this.pending.length, CHUNK_BYTES * 10);
+    this.burst = Math.min(this.pendingBytes, CHUNK_BYTES * 10);
     this.lastPaced = this.clock.now();
     this.pump();
   }
@@ -66,7 +68,7 @@ export class Forwarder {
   stop(): void {
     const pad = this.padding;
     this.forwarding = false; this.padding = null;
-    this.sent = this.queued; this.pending = Buffer.alloc(0); this.burst = 0;
+    this.sent = this.queued; this.clearPending(); this.burst = 0;
     this.pump();
     pad?.then(); // pad_then_close: ending the pad early must still send the close
   }
@@ -88,9 +90,26 @@ export class Forwarder {
   }
 
   private enqueue(pcm: Int16Array): void {
-    const bytes = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
-    this.pending = Buffer.concat([this.pending, bytes]);
+    // Own the bytes: CloseCapture zeros the ring's PCM while socket writes may still be pending.
+    const bytes = Buffer.from(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength));
+    this.pending.push(bytes); this.pendingBytes += bytes.length;
     this.queued += bytes.length;
+  }
+  private clearPending(): void { this.pending = []; this.pendingHead = 0; this.pendingBytes = 0; }
+  private take(size: number): Buffer {
+    const chunk = Buffer.allocUnsafe(size);
+    let written = 0;
+    while (written < size) {
+      const first = this.pending[this.pendingHead]!;
+      const count = Math.min(size - written, first.length);
+      first.copy(chunk, written, 0, count); written += count;
+      if (count === first.length) this.pending[this.pendingHead++] = undefined;
+      else this.pending[this.pendingHead] = first.subarray(count);
+    }
+    this.pendingBytes -= size;
+    if (!this.pendingBytes) this.clearPending();
+    else if (this.pendingHead >= 128) { this.pending = this.pending.slice(this.pendingHead); this.pendingHead = 0; }
+    return chunk;
   }
   private write(chunk: Buffer): void {
     this.sent += chunk.length;
@@ -107,7 +126,7 @@ export class Forwarder {
     if (!this.opened) {
       // Audio queued while connecting is backlog too: first 1 s back-to-back, then 2×.
       this.opened = true;
-      this.burst = Math.min(this.pending.length, CHUNK_BYTES * 10);
+      this.burst = Math.min(this.pendingBytes, CHUNK_BYTES * 10);
       this.lastPaced = now;
     }
     if (this.padding) {
@@ -120,19 +139,16 @@ export class Forwarder {
     }
     // Controls due before any more audio.
     this.flushControls(sink);
-    while (this.pending.length >= CHUNK_BYTES || (this.pending.length && this.nextControlDue())) {
-      const behind = this.pending.length > CHUNK_BYTES * 2;
+    while (this.pendingBytes >= CHUNK_BYTES || (this.pendingBytes && this.nextControlDue())) {
+      const behind = this.pendingBytes > CHUNK_BYTES * 2;
       if (this.burst > 0) this.burst -= CHUNK_BYTES;
       else {
         const interval = behind ? 0.05 : 0.1; // 2× real time while catching up
         // A due control frame only flushes a trailing partial chunk; it never bypasses pacing.
-        if (now - this.lastPaced < interval - 1e-3 && !(this.pending.length < CHUNK_BYTES && this.nextControlDue())) break;
+        if (now - this.lastPaced < interval - 1e-3 && !(this.pendingBytes < CHUNK_BYTES && this.nextControlDue())) break;
         this.lastPaced = Math.max(this.lastPaced + interval, now - interval);
       }
-      const size = Math.min(CHUNK_BYTES, this.pending.length);
-      const chunk = this.pending.subarray(0, size);
-      this.pending = this.pending.subarray(size);
-      this.write(Buffer.from(chunk));
+      this.write(this.take(Math.min(CHUNK_BYTES, this.pendingBytes)));
       this.flushControls(sink);
     }
   }

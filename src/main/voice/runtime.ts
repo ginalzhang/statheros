@@ -27,6 +27,7 @@ export interface VoiceHost {
 export type { VoiceSnapshot } from '../../shared/voice';
 
 export interface UtteranceLatency { wakeToFirstByteMs: number | null; speechEndToFinalMs: number | null; finalToDispatchMs: number | null; source: VoiceSource }
+export const MAX_LATENCY_SAMPLES = 1000;
 
 export interface RuntimeOptions {
   apiKey: string | null;
@@ -53,6 +54,7 @@ export class VoiceRuntime {
   private readonly sessions = new Set<SttSession>();
   private readonly queue: VoiceEvent[] = [];
   private draining = false;
+  private stopped = false;
   private readonly timers = new Map<TimerName, unknown>();
   private executor: Promise<void> = Promise.resolve();
   private readonly now: () => number;
@@ -62,6 +64,7 @@ export class VoiceRuntime {
   private toastId = 0;
   private zeroSince: number | null = null;
   private zeroReported = false;
+  private captureOpen = false;
   private wakeReady = false;
   private vadKind: VoiceSnapshot['vad'] = 'none';
   private utterance: { wakeTs: number | null; firstByteTs: number | null; speechEndTs: number | null; finalTs: number | null } = { wakeTs: null, firstByteTs: null, speechEndTs: null, finalTs: null };
@@ -97,8 +100,9 @@ export class VoiceRuntime {
       if (signal.type === 'SttConnected') result = { ok: true, code: null };
       if (signal.type === 'SttError') result = { ok: false, code: signal.code };
     }, { factory: this.options.socketFactory, baseUrl: this.options.baseUrl });
-    await probe.open();
-    probe.abort();
+    this.sessions.add(probe);
+    try { await probe.open(); }
+    finally { probe.abort(); this.sessions.delete(probe); }
     this.post({ type: 'ProbeResult', ...result });
   }
 
@@ -112,6 +116,7 @@ export class VoiceRuntime {
   }
 
   post(event: VoiceEvent): void {
+    if (this.stopped) return;
     this.queue.push(event);
     if (this.draining) return;
     this.draining = true;
@@ -122,6 +127,8 @@ export class VoiceRuntime {
           this.host.log('debug', { droppedStale: next.type, sessionId: next.sessionId });
           continue;
         }
+        if (next.type === 'DeviceChanged') this.captureOpen = false;
+        if (next.type === 'CaptureOpened' && this.ctx.state !== 'DISABLED' && !(this.ctx.state === 'MUTED' && this.ctx.mutedReason === 'user')) this.captureOpen = true;
         if (next.type === 'SttFinal') this.utterance.finalTs = this.now();
         const actions = this.machine.handle(next, this.ctx, this.now());
         // One failing action must never strand the rest of the batch (timers, gate) or the queue.
@@ -153,6 +160,7 @@ export class VoiceRuntime {
 
   /** Result from the inference thread: mirror VAD state first, then post its events. */
   inferenceResult(result: InferenceResult): void {
+    if (this.stopped) return;
     this.ctx.vadActive = result.vadActive; this.ctx.vadRawActive = result.rawActive;
     this.inferenceMs.push(result.inferMs);
     if (this.inferenceMs.length >= 750) {
@@ -170,7 +178,7 @@ export class VoiceRuntime {
 
   snapshot(): VoiceSnapshot {
     return {
-      state: this.ctx.state, transcript: this.ui.transcript, transcriptFinal: this.ui.transcriptFinal, cloudOn: this.forwarder.gate,
+      captureOpen: this.captureOpen, state: this.ctx.state, transcript: this.ui.transcript, transcriptFinal: this.ui.transcriptFinal, cloudOn: this.forwarder.gate,
       levelDbfs: this.ui.levelDbfs !== null && Number.isFinite(this.ui.levelDbfs) ? this.ui.levelDbfs : null, lastError: this.ctx.lastError,
       sttDisabled: this.ctx.sttDisabled, inFlight: this.ctx.inFlightCmd !== null, working: this.ui.working && this.ctx.inFlightCmd !== null,
       toast: this.ui.toast, wakePhrase: this.config.wake.phrase, hotkey: this.config.ptt.hotkey, muteHotkey: this.config.ptt.muteHotkey,
@@ -179,10 +187,14 @@ export class VoiceRuntime {
   }
 
   shutdown(): void {
+    if (this.stopped) return;
     this.post({ type: 'Shutdown' });
+    this.stopped = true;
     for (const handle of this.timers.values()) this.clearT(handle);
     this.timers.clear();
     for (const session of this.sessions) session.abort();
+    this.sessions.clear();
+    this.session?.abort(); this.session = null;
     this.forwarder.detach();
   }
 
@@ -236,7 +248,7 @@ export class VoiceRuntime {
         return;
       }
       case 'OpenCapture': return this.host.openCapture();
-      case 'CloseCapture': this.ring.clear(); this.host.inference.reset(); this.ui.levelDbfs = null; return this.host.closeCapture();
+      case 'CloseCapture': this.captureOpen = false; this.ring.clear(); this.host.inference.reset(); this.ui.levelDbfs = null; return this.host.closeCapture();
       case 'PadZeros': return this.forwarder.padZeros(action.seconds, () => { this.forwarder.gate = false; this.forwarder.stop(); this.forwarder.control('close'); });
       case 'Log': return this.host.log(action.level, action.fields);
     }
@@ -265,9 +277,13 @@ export class VoiceRuntime {
       speechEndToFinalMs: u.speechEndTs !== null && u.finalTs !== null ? Math.round((u.finalTs - u.speechEndTs) * 1000) : null,
       finalToDispatchMs: u.finalTs !== null ? Math.round((this.now() - u.finalTs) * 1000) : null,
     };
-    this.latencies.push(latency);
-    this.host.log('info', { utterance: latency, confidence: command.confidence });
+    const finalTs = u.finalTs;
     this.executor = this.executor.then(async () => {
+      if (this.stopped) return;
+      latency.finalToDispatchMs = finalTs !== null ? Math.round((this.now() - finalTs) * 1000) : null;
+      this.latencies.push(latency);
+      if (this.latencies.length > MAX_LATENCY_SAMPLES) this.latencies.shift();
+      this.host.log('info', { utterance: latency, confidence: command.confidence });
       // Outcomes are logged so a command that was heard but didn't land can be told apart; quoted transcripts are redacted.
       try {
         const resultText = await this.host.executeCommand(command);

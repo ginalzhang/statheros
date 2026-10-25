@@ -29,7 +29,7 @@ export function useVoiceCapture(): void {
       if (command.type === 'earcon') earcons.play(command.name, command.playId);
       if (command.type === 'stopPlayback') earcons.stopAll();
     });
-    return () => { off(); capture.close(); };
+    return () => { off(); capture.dispose(); earcons.dispose(); };
   }, []);
 }
 
@@ -37,7 +37,7 @@ export const voiceLabel = (voice: VoiceSnapshot): string => {
   switch (voice.state) {
     case 'DISABLED': return 'Voice unavailable';
     case 'MUTED': return 'Mic off';
-    case 'PASSIVE': return voice.inFlight ? 'Working…' : voice.wakeReady ? 'Listening for commands' : 'Push-to-talk ready';
+    case 'PASSIVE': if (!voice.captureOpen) return 'Starting microphone…'; return voice.inFlight ? 'Working…' : voice.wakeReady ? 'Listening for commands' : 'Push-to-talk ready';
     case 'WAKING': case 'LISTENING': return 'Listening…';
     case 'PTT_ACTIVE': return 'Speak · press again to send';
     case 'PROCESSING': return 'Thinking…';
@@ -47,7 +47,7 @@ export const voiceLabel = (voice: VoiceSnapshot): string => {
   }
 };
 const listening = (voice: VoiceSnapshot): boolean => ['WAKING', 'LISTENING', 'PTT_ACTIVE'].includes(voice.state);
-const shortcut = (accelerator: string): string => accelerator.replace('CommandOrControl', '⌘').replace('Shift', '⇧').replace('Space', 'Space').replace(/\+/g, '');
+const shortcut = (accelerator: string): string => accelerator.replace('CommandOrControl', '⌘').replace('Shift', '⇧').replace(/\+/g, '');
 
 /** Panel Voice section (Figma: "Voice Commands" switch) plus the live indicator the voice module needs:
  * state, red cloud dot while audio leaves the Mac, transcript line (click cancels) and toasts. */
@@ -73,7 +73,7 @@ export function VoiceStrip({ voice }: { voice: VoiceSnapshot }): React.JSX.Eleme
     <h2 id="voice-title">Voice</h2>
     <div className="row"><span id="voice-switch-label">Voice Commands</span>
       {/* Shows actual activation (capture open), not only the request (handoff §02). */}
-      <button className="switch" role="switch" aria-checked={!off} aria-labelledby="voice-switch-label" disabled={voice.state === 'DISABLED'} onClick={() => void window.steady.microphone(off)}><span /></button>
+      <button className="switch" role="switch" aria-checked={voice.captureOpen} aria-labelledby="voice-switch-label" disabled={voice.state === 'DISABLED'} onClick={() => void window.steady.microphone(off)}><span /></button>
     </div>
     {!off && <div className="voice-live">
       <button className={`mic-button${listening(voice) ? ' live' : ''}`} aria-label={listening(voice) ? 'Stop listening' : 'Push to talk'}
@@ -102,7 +102,7 @@ export function VoiceSettings({ voice, keySource, run }: { voice: VoiceSnapshot;
   return <section aria-labelledby="voice-heading">
     <h2 id="voice-heading">Voice commands</h2>
     <p>With the microphone on, just say a command (“undo”, “redo”, “brush”, “eraser”, “pen down”, “bigger”, “pause”…), even inside a sentence like “switch to the brush”. Command words are recognized on this Mac and run at once. Anything else you say (“get rid of that last line”) is sent to Cartesia while the red dot shows, then read by Claude when an Anthropic key is set. {shortcut(voice.hotkey)} also sends one utterance. Mute the mic when you don't want to be heard.</p>
-    <p role="status">{voiceLabel(voice)} · wake word {voice.wakeReady ? 'ready' : 'unavailable'} · VAD {voice.vad} · Cartesia key {voice.keyPresent ? (keySource === 'env' ? 'from CARTESIA_API_KEY' : 'saved in Keychain') : 'missing'}{voice.sttDisabled ? ' · speech-to-text disabled' : ''}</p>
+    <p role="status">{voiceLabel(voice)} · local commands {voice.wakeReady ? 'ready' : 'unavailable'} · VAD {voice.vad} · Cartesia key {voice.keyPresent ? (keySource === 'env' ? 'from CARTESIA_API_KEY' : 'saved securely on this Mac') : 'missing'}{voice.sttDisabled ? ' · speech-to-text disabled' : ''}</p>
     <dl><dt>Push to talk</dt><dd>{shortcut(voice.hotkey)} (toggle)</dd><dt>Mute</dt><dd>{shortcut(voice.muteHotkey)} or right-click the mic</dd><dt>Cancel</dt><dd>“cancel”, or click the transcript</dd></dl>
     {keySource !== 'env' && <div className="settings-actions">
       <label className="key-field">Cartesia API key<input type="password" autoComplete="off" spellCheck={false} placeholder={voice.keyPresent ? 'Saved — paste to replace' : 'sk_car_…'} value={key} onChange={event => setKey(event.target.value)} /></label>

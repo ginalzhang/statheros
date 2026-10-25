@@ -36,7 +36,7 @@ export const CARTESIA_VERSION = '2026-08-14';
 
 export const defaultVoiceConfig = (): VoiceConfig => ({
   enabled: true,
-  // Steady's command layer is a fixed vocabulary, not LLM-backed (docs/voice/DISCOVERY.md §4).
+  // Local keywords use the fixed vocabulary; cloud transcripts may also use Claude interpretation.
   dispatchLowConfidence: 'ptt_only',
   audio: { frameQueueMax: 25 },
   wake: {
@@ -45,7 +45,7 @@ export const defaultVoiceConfig = (): VoiceConfig => ({
     prerollMs: 1500, playbackGateTailMs: 200,
     gateCapS: { earcon: 1, tts: 30 }, skipAfterDeviceSwapMs: 500, localStopKeyword: true, remnantAliases: [],
     requireAttention: false, attentionWindowMs: 1500,
-    // Off: command words stay on-device and instant. Counts ("undo three times") work after the wake phrase or push-to-talk.
+    // Off: command words stay on-device and instant. Counts ("undo three times") work through push-to-talk.
     localFollowUp: false,
     // Pre-roll covers VAD onset lag only; a longer one could re-send the previous utterance's command word.
     openMic: true, openPrerollMs: 300, openMinSpeechMs: 250,

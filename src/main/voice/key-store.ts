@@ -9,7 +9,7 @@ export interface Encryptor { isEncryptionAvailable(): boolean; encryptString(val
  */
 export class KeyStore {
   constructor(private readonly filename: string, private readonly crypto: Encryptor, private readonly env: NodeJS.ProcessEnv = process.env) {}
-  get source(): 'env' | 'settings' | null { return this.env.CARTESIA_API_KEY ? 'env' : existsSync(this.filename) ? 'settings' : null; }
+  get source(): 'env' | 'settings' | null { return this.env.CARTESIA_API_KEY?.trim() ? 'env' : existsSync(this.filename) ? 'settings' : null; }
   get(): string | null {
     const fromEnv = this.env.CARTESIA_API_KEY?.trim();
     if (fromEnv) return fromEnv;

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync } from 'node:fs';
-import os from 'node:os';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { defaultVoiceConfig } from '../../src/main/voice/config';
 import { AutoTranscriptBuilder, ManualTranscriptBuilder } from '../../src/main/voice/transcripts';
@@ -8,7 +7,6 @@ import { Forwarder, type AudioSink, type PacingClock } from '../../src/main/voic
 import { RingBuffer, FRAME_SAMPLES } from '../../src/main/voice/audio';
 import { LocalVad } from '../../src/main/voice/vad';
 import { sttUrl } from '../../src/main/voice/stt-session';
-import { PidLock } from '../../src/main/voice/lock';
 import { findSteadyCommands, parseSteadyCommand } from '../../src/main/voice/steady-commands';
 import { keywordMeaning } from '../../src/main/voice/inference';
 
@@ -62,6 +60,22 @@ class FakeSink implements AudioSink {
 const frame = (ts: number) => ({ pcm: new Int16Array(FRAME_SAMPLES).fill(100), ts });
 
 describe('Forwarder', () => {
+  it('preserves PCM order across frame boundaries and owns pending audio after the ring is cleared', () => {
+    const clock = new FakeClock(), ring = new RingBuffer(256), forwarder = new Forwarder(ring, clock), sink = new FakeSink(clock);
+    const audio: Buffer[] = [];
+    sink.sendAudio = pcm => { audio.push(pcm); return true; };
+    const expected = Buffer.alloc(201 * FRAME_SAMPLES * 2);
+    for (let i = 0; i < 201; i++) {
+      const value = { pcm: new Int16Array(FRAME_SAMPLES).fill(i + 1), ts: i * 0.08 };
+      Buffer.from(value.pcm.buffer).copy(expected, i * FRAME_SAMPLES * 2);
+      ring.append(value);
+    }
+    forwarder.attach(sink); forwarder.gate = true; forwarder.start(0);
+    forwarder.control('finalize'); ring.clear(); sink.isOpen = true; clock.advance(20);
+    expect(Buffer.concat(audio)).toEqual(expected);
+    expect(sink.controls).toEqual(['finalize']);
+    forwarder.detach();
+  });
   it('never writes binary with the gate off; queued audio is not a send', () => {
     const clock = new FakeClock(), ring = new RingBuffer(63), forwarder = new Forwarder(ring, clock), sink = new FakeSink(clock);
     for (let i = 0; i < 10; i++) ring.append(frame(i * 0.08));
@@ -159,18 +173,6 @@ describe('sttUrl', () => {
     expect(url.pathname).toBe('/stt/websocket');
     expect(url.searchParams.has('turn_end_threshold')).toBe(false);
     expect(() => sttUrl('manual', config, 'ws://example.com')).toThrow();
-  });
-});
-
-describe('PidLock', () => {
-  it('refuses while another live instance holds it', () => {
-    const file = path.join(mkdtempSync(path.join(os.tmpdir(), 'steady-lock-')), 'voice.lock');
-    const first = new PidLock(file, 111, () => true), second = new PidLock(file, 222, () => true);
-    expect(first.acquire()).toBe(true);
-    expect(second.acquire()).toBe(false);
-    first.release();
-    expect(second.acquire()).toBe(true);
-    expect(new PidLock(file, 333, () => false).acquire()).toBe(true); // stale owner
   });
 });
 

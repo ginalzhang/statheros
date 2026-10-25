@@ -5,7 +5,7 @@ import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 
 async function openSelector(app: ElectronApplication, panel: Page): Promise<Page> {
-  await panel.getByRole('button', { name: 'Select with mouse', exact: true }).click();
+  await panel.evaluate(() => window.steady.selectCanvas());
   // Confirmation can create a short-lived outline window at the same time.
   // Select the overlay by its view rather than accepting the next window event.
   const selectors = () => app.windows().filter(page => !page.isClosed() && new URL(page.url()).searchParams.get('view') === 'canvas-overlay');
@@ -26,7 +26,10 @@ test('mouse setup works without calibration, validates preview, and ends paused'
     await expect.poll(() => panel.evaluate(async () => (await window.steady.status()).nativeClockReady)).toBe(true);
     expect((await panel.evaluate(() => window.steady.status())).settings?.calibrations).toEqual([]);
     let overlay = await openSelector(app, panel);
-    await expect(panel.getByRole('heading', { name: 'Canvas', exact: true })).toBeAttached();
+    await expect(panel.getByRole('heading', { name: 'Canvas', exact: true })).toHaveCount(0);
+    await expect(panel.getByRole('region', { name: 'Tracking', exact: true }).getByText('Canvas', { exact: true })).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'Set canvas', exact: true })).toHaveCount(0);
+    await expect(panel.getByText('Canvas set', { exact: true })).toBeVisible();
     // Canvas windows never mount the panel's microphone hook, even if a capture
     // command reaches their preload. Stub media so this test cannot open hardware.
     await overlay.evaluate(() => {
@@ -108,8 +111,7 @@ test('Set canvas confirms detection, reviews suggestions, and falls back without
     const mode = (value: string) => app.evaluate((_electron, value) => { (globalThis as any).canvasTest.mode = value; }, value);
     const start = async () => {
       const previousGeneration = (await status()).generation;
-      await panel.getByRole('button', { name: 'Set canvas', exact: true }).click();
-      // A DOM click returns before asynchronous IPC finishes starting detection.
+      await panel.evaluate(() => window.steady.localAction('setCanvas'));
       // Inject changes only after the new request (or its result) is published.
       await expect.poll(async () => {
         const current = await status();
@@ -142,7 +144,7 @@ test('Set canvas confirms detection, reviews suggestions, and falls back without
     expect((await status()).native?.state).toBe('PAUSED');
 
     await mode('stale'); await start();
-    await expect(panel.getByRole('button', { name: 'Set canvas', exact: true })).toBeDisabled();
+    expect((await status()).canvasSetup).toMatchObject({ active: true, mode: 'detect' });
     const pendingGeneration = (await status()).generation;
     await expect.poll(() => panel.evaluate(async () => {
       try { await window.steady.localAction('setCanvas'); return true; } catch { return false; }
@@ -150,7 +152,7 @@ test('Set canvas confirms detection, reviews suggestions, and falls back without
     expect((await status()).generation).toBe(pendingGeneration);
     await panel.waitForTimeout(700);
     expect(overlays()).toHaveLength(0);
-    await panel.getByRole('button', { name: 'Cancel canvas', exact: true }).click();
+    await panel.evaluate(() => window.steady.cancelCanvas());
     await mode('workspace'); await panel.waitForTimeout(700);
     expect(overlays()).toHaveLength(0); expect((await status()).canvasConfirmed).toBe(false);
 
@@ -176,7 +178,7 @@ test('Set canvas confirms detection, reviews suggestions, and falls back without
     expect((await status()).canvasSetup?.active).toBe(false);
     await panel.evaluate(() => window.steady.closeSettings());
     // The standalone detection command retains its original behavior.
-    await panel.getByRole('button', { name: 'Detect canvas', exact: true }).click();
+    await panel.evaluate(() => window.steady.beginCanvas());
     await panel.waitForTimeout(700); expect(overlays()).toHaveLength(0);
     expect((await status()).canvasSetup?.active).toBe(false);
 

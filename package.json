@@ -2,7 +2,7 @@
   "name": "steady",
   "productName": "Steady",
   "version": "0.1.0",
-  "description": "Local macOS drawing companion — phase 03 Krita integration",
+  "description": "Hands-free macOS drawing companion for Krita with head and palm tracking and voice commands",
   "private": true,
   "type": "module",
   "main": ".vite/build/main.cjs",

@@ -15,6 +15,6 @@ it('maps the constrained answer to a clamped plan and everything else to no step
   expect(await interpretPlan(fake({ text: 'not json' }), 'x')).toEqual([]);
   expect(await interpretPlan(fake({ stop_reason: 'refusal' }), 'x')).toEqual([]);
 });
-it('prefers ANTHROPIC_API_KEY', () => {
-  expect(anthropicKey({ ANTHROPIC_API_KEY: ' sk-test ' })).toBe('sk-test');
+it('prefers ANTHROPIC_API_KEY', async () => {
+  expect(await anthropicKey({ ANTHROPIC_API_KEY: ' sk-test ' })).toBe('sk-test');
 });

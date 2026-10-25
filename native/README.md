@@ -1,16 +1,17 @@
 # Steady native helper
 
-The native helper supports Steady’s working prototype, including fake input, explicitly enabled Krita input, and a bounded real-input probe. Voice input is disabled.
+The native helper supports Steady’s working prototype, including fake input, explicitly enabled Krita input, and a bounded real-input probe. Native Apple speech recognition is disabled; Electron owns the active local-command and cloud voice pipeline.
 
 This Swift 6.4 package targets arm64 macOS 26.0 with the installed macOS 27.0 SDK. Electron owns and launches the executable from its packaged resources outside ASAR. It is not a separately launched service. It requires no compiler, interpreter, checkout, TCP port, or native resource directory at runtime.
 
-Use the root `npm run build:native` and `npm run test:native` scripts. The former copies the release executable to `resources/bin/SteadyNative`. The pinned Command Line Tools currently require explicit loading of their installed Swift Testing macro plugin; the root test script records that path. SwiftPM's default build backend can compile/run Swift Testing, while its native backend builds the release executable without the sandbox-restricted dSYM operation. These are SwiftPM build backend flags, not a version or stack change.
+Use the root `npm run build:native` and `npm run test:native` scripts. The former copies the release executable to `resources/bin/SteadyNative`. The pinned Command Line Tools currently require explicit loading of their installed Swift Testing macro plugin; the root test script records that path. Both release builds and Swift tests use SwiftPM's default build backend. The packaged release helper omits debug information and dSYM generation; Swift tests retain debug builds. The deprecated `--build-system native` option is no longer used.
 
-`native/Tests/integration.py resources/bin/SteadyNative` runs process checks using `--test-fake-backend`: real stdio framing, eight-round-trip clock mapping, live-heartbeat starvation release, EOF while a fake button is held, default/emergency fake release, oversized-frame rejection, bounded-probe EOF release, idle speech counters, and deferred-voice rejection before permission/asset/capture work. Python is a development test harness only. No automated check accesses cameras/microphones, observes real desktop activation or injects desktop events.
+`native/Tests/integration.py resources/bin/SteadyNative` runs process checks using `--test-fake-backend`: real stdio framing, eight-round-trip clock mapping, live-heartbeat starvation release, EOF while a fake button is held, default/emergency fake release, oversized-frame rejection, bounded-probe EOF release, absence of retired speech diagnostics, and deferred-voice rejection before permission/asset/capture work. Python is a development test harness only. No automated check accesses cameras/microphones, observes real desktop activation or injects desktop events.
 
 ## Runtime arguments
 
 - No arguments: real permission, foreground and display diagnostics, fake event posting. Microphone stays off and no speech assets install automatically.
+- `--test-system-displays` (only with the fake backend): use online display geometry, including sleeping displays, for packaged desktop tests. Real input continues to use active displays only.
 - `--test-fake-backend`: deterministic synthetic display/permissions/foreground and observable fake event diagnostics on stderr. Cannot be combined with real input.
 - `--release-and-exit`: unconditional mouse-up attempt through the selected backend; default backend posts nothing. Electron passes `--real-input` when releasing after a real helper. This emergency path works before the normal packaged-identity restriction.
 - `--real-input`: opt into Quartz posting. Normal real operation requires the executable to be inside `Steady.app/Contents/`; target bundle/PID and Accessibility are checked immediately before input down/move/shortcut posting. Mouse-up always attempts release.
@@ -24,13 +25,11 @@ The native engine launches paused and pen-up. Nonnull configured canvas is paren
 
 Platform metadata is collected outside the input lock on its own queue; the freshness timer, state snapshot and clock ping use the latest authoritative native snapshot. Action/configuration requests refresh metadata before taking the input lock. Native workspace activation pauses/releases directly; Quartz reconfiguration invalidates/releases before refreshing geometry. Real event posting still checks current Accessibility, foreground bundle and PID immediately before posting, and a rejected post pauses/releases without claiming a held button. Emergency release posts before metadata/engine initialization. Clock synchronization remains exactly eight round trips with a 10 ms uncertainty gate; readiness is reported separately from the first hello state.
 
-## Deferred speech implementation
+## Native speech compatibility
 
-Voice input and speech-asset installation are disabled in the current prototype. The helper rejects microphone enable and speech-asset installation with `voice-deferred-phase01`; microphone disable remains allowed. The rejection code retains its historical name for protocol compatibility.
+Native Apple speech recognition and speech-asset installation are disabled. Voice commands run through the Electron pipeline described in [the voice guide](../docs/voice/README.md). The helper rejects microphone enable and speech-asset installation with `voice-deferred-phase01`; microphone disable remains allowed. The rejection code retains its historical name for protocol compatibility.
 
-Speech recognition and diagnostic code remain in the source for future work. `ThirdParty/libfvad/` is an inactive interrupted import: `Package.swift` has no C target or dependency, so it is not compiled into the helper. The retained implementation uses Apple Speech APIs, but detector boundaries, finalization behavior, offline recognition, and speech-end-to-action timing have not been established through live hardware validation. Synthetic tests and compilation do not establish those behaviors.
-
-Diagnostic counters use the `steady-speech-probe:` stderr prefix and contain no recognized text or audio. Electron validates the bounded schema against the current speech session. Numeric diagnostic evidence uses the historical userData path `phase01-evidence/speech-diagnostics.jsonl`, capped at 1 MiB with unchanged snapshots suppressed. Observation timestamps are not speech-end timestamps.
+The unused Apple speech recognizer, transcript assembler, diagnostic timer/recorder, and libfvad import have been removed. There is no native microphone allocation, speech permission lookup, or periodic speech diagnostic output. The `speech` permission field remains `unused` for protocol-v1 compatibility. Existing rejection codes and native microphone-disable requests remain compatible.
 
 Historical feasibility findings and authorization records are preserved locally under `.archive/plan/` at the repository root. That directory is ignored by Git and unavailable in fresh checkouts. See the [root README](../README.md) for current capabilities and limitations.
 

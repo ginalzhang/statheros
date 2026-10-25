@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
+import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { WebSocketServer, type WebSocket as ServerSocket } from 'ws';
@@ -68,7 +69,8 @@ async function fakeCartesia(script: Script): Promise<{ url: string; log: ServerL
       if (!finalSent && seconds >= script.finalAfterAudioS) { finalSent = true; socket.send(JSON.stringify({ type: 'turn.end', transcript: script.transcript })); }
     });
   });
-  await new Promise(resolve => server.once('listening', resolve));
+  // events.once rejects on server errors instead of leaving setup pending until the test timeout.
+  await once(server, 'listening');
   const { port } = server.address() as AddressInfo;
   return { url: `ws://127.0.0.1:${port}`, log, close: () => new Promise(resolve => { for (const client of server.clients) client.terminate(); server.close(() => resolve()); }) };
 }

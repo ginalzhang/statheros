@@ -28,10 +28,4 @@ export function peakDbfs(pcm: Int16Array): number {
   for (const sample of pcm) { const value = Math.abs(sample); if (value > peak) peak = value; }
   return peak === 0 ? -Infinity : 20 * Math.log10(peak / 32768);
 }
-export function rmsDbfs(pcm: Int16Array): number {
-  let sum = 0;
-  for (const sample of pcm) sum += sample * sample;
-  const rms = Math.sqrt(sum / Math.max(1, pcm.length));
-  return rms === 0 ? -Infinity : 20 * Math.log10(rms / 32768);
-}
 export const isSilentZero = (pcm: Int16Array): boolean => pcm.every(sample => sample === 0);

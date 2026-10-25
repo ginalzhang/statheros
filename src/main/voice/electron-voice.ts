@@ -1,10 +1,10 @@
 import { globalShortcut, safeStorage, systemPreferences, type BrowserWindow } from 'electron';
 import { Worker } from 'node:worker_threads';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { defaultVoiceConfig, type VoiceConfig } from './config';
 import { KeyStore } from './key-store';
-import { PidLock } from './lock';
+import { BufferedLog } from '../buffered-log';
 import { latencySummary, VoiceRuntime, type VoiceHost } from './runtime';
 import { FRAME_SAMPLES, peakDbfs } from './audio';
 import type { InferenceReply, InferenceRequest } from './inference-worker';
@@ -32,39 +32,39 @@ export class ElectronVoice {
   private worker: Worker | null = null;
   private outstanding = 0;
   private readonly keys: KeyStore;
-  private readonly lock: PidLock;
+  private started = false;
+  private readonly hotkeys = new Set<string>();
   private snapshotValue: VoiceSnapshot | null = null;
   private lastMute = -Infinity;
   private selfTestTap: ((pcm: Int16Array) => void) | null = null;
   private refusal: string | null = null;
-  private readonly logFile: string;
+  private readonly logger: BufferedLog;
+  private selfTestPending: Promise<VoiceSelfTest> | null = null;
 
   constructor(private readonly options: ElectronVoiceOptions) {
     this.config = options.config ?? defaultVoiceConfig();
     this.keys = new KeyStore(path.join(options.userData, 'cartesia-key.bin'), safeStorage);
-    this.lock = new PidLock(path.join(options.userData, 'voice.lock'));
-    this.logFile = path.join(options.userData, 'voice.log');
+    this.logger = new BufferedLog(path.join(options.userData, 'voice.log'));
   }
 
   start(): void {
-    if (!this.config.enabled) return;
-    if (!this.lock.acquire()) return this.toast('Voice already running in another instance');
+    if (!this.config.enabled || this.started) return;
+    this.started = true;
     this.startRuntime();
     this.registerHotkeys();
   }
 
-  /** Steady launches microphone-off (plan §2): wake listening starts when the user turns the mic on. */
+  /** Steady launches microphone-off (plan §2): local command listening starts when the user turns the mic on. */
   private startRuntime(muted = true): void {
     const apiKey = this.keys.get();
     const runtime = this.runtime = new VoiceRuntime(this.config, this.host(), { apiKey, abortSupported: false });
-    this.startWorker(runtime);
     runtime.start({ muted });
   }
 
   private host(): VoiceHost {
     return {
       executeCommand: command => this.options.execute(command),
-      openCapture: () => { void this.openCapture(); },
+      openCapture: () => { if (this.runtime && !this.worker) this.startWorker(this.runtime); void this.openCapture(); },
       closeCapture: () => { this.toPanel({ type: 'close' }); this.options.microphoneChanged(false); },
       playEarcon: (name, playId) => this.toPanel({ type: 'earcon', name, playId }),
       stopPlayback: () => this.toPanel({ type: 'stopPlayback' }),
@@ -94,22 +94,30 @@ export class ElectronVoice {
         wakePhrase: this.config.wake.phrase, vadThreshold: this.config.vad.threshold, hangoverMs: this.config.vad.hangoverMs,
       } });
     } catch (error) {
-      runtime.setInferenceStatus({ wake: false, vad: 'energy', error: `Wake word unavailable; push-to-talk still works (${String(error)})` });
+      runtime.setInferenceStatus({ wake: false, vad: 'energy', error: `Local command recognition unavailable; push-to-talk still works (${String(error)})` });
       return;
     }
-    this.worker.on('message', (message: InferenceReply) => {
+    const worker = this.worker;
+    worker.on('message', (message: InferenceReply) => {
+      if (this.worker !== worker || this.runtime !== runtime) return;
       if (message.type === 'ready') return runtime.setInferenceStatus(message);
       this.outstanding = Math.max(0, this.outstanding - 1);
       runtime.inferenceResult(message);
     });
-    this.worker.on('error', error => { this.log('warn', { workerError: String(error) }); runtime.setInferenceStatus({ wake: false, vad: 'energy', error: 'Wake word crashed; push-to-talk still works' }); this.worker = null; });
+    worker.on('error', error => {
+      if (this.worker !== worker || this.runtime !== runtime) return;
+      this.log('warn', { workerError: String(error) });
+      runtime.setInferenceStatus({ wake: false, vad: 'energy', error: 'Local command recognition crashed; push-to-talk still works' });
+      this.worker = null; this.outstanding = 0;
+    });
   }
 
   private registerHotkeys(): void {
     const register = (accelerator: string, callback: () => void): void => {
       let ok = false;
       try { ok = globalShortcut.register(accelerator, callback); } catch { ok = false; }
-      if (!ok) this.toast(`${accelerator}: shortcut taken by another app`);
+      if (ok) this.hotkeys.add(accelerator);
+      else this.toast(`${accelerator}: shortcut taken by another app`);
     };
     // globalShortcut is key-down only: toggle, no hold-to-talk (prompt §2).
     register(this.config.ptt.hotkey, () => this.runtime?.post({ type: 'HotkeyToggle' }));
@@ -126,15 +134,18 @@ export class ElectronVoice {
   }
 
   private async openCapture(): Promise<void> {
+    const runtime = this.runtime;
+    if (!runtime) return;
     if (process.platform === 'darwin') {
       let status = systemPreferences.getMediaAccessStatus('microphone');
       const initial = status;
       if (status === 'not-determined') status = (await systemPreferences.askForMediaAccess('microphone')) ? 'granted' : 'denied';
       this.log('info', { micAccess: status, ...(initial !== status ? { micAccessBefore: initial } : {}) });
-      if (status === 'denied' || status === 'restricted') { this.runtime?.post({ type: 'CaptureFailed', reason: status }); return; }
+      if (this.runtime !== runtime) return;
+      if (status === 'denied' || status === 'restricted') { runtime.post({ type: 'CaptureFailed', reason: status }); return; }
     }
     // The user may have muted while the permission prompt was up.
-    if (this.runtime?.ctx.state === 'MUTED' && this.runtime.ctx.mutedReason === 'user') return;
+    if (this.runtime !== runtime || runtime.ctx.state === 'DISABLED' || (runtime.ctx.state === 'MUTED' && runtime.ctx.mutedReason === 'user')) return;
     this.toPanel({ type: 'open' });
   }
 
@@ -149,7 +160,9 @@ export class ElectronVoice {
     const runtime = this.runtime;
     if (!runtime) return;
     switch (report.type) {
-      case 'opened': this.options.microphoneChanged(true); runtime.post({ type: 'CaptureOpened' }); return;
+      case 'opened':
+        if (runtime.ctx.state === 'DISABLED' || (runtime.ctx.state === 'MUTED' && runtime.ctx.mutedReason === 'user')) { this.toPanel({ type: 'close' }); return; }
+        this.options.microphoneChanged(true); runtime.post({ type: 'CaptureOpened' }); return;
       case 'failed': runtime.post({ type: 'CaptureFailed', reason: report.reason }); return;
       case 'deviceChanged': runtime.post({ type: 'DeviceChanged' }); return;
       case 'earconStarted': return; // gating starts when PlayEarcon is issued
@@ -168,6 +181,7 @@ export class ElectronVoice {
   setKey(key: string | null): void {
     if (this.keys.source === 'env') throw new Error('CARTESIA_API_KEY is set in the environment; it takes precedence.');
     if (key === null) this.keys.clear(); else this.keys.set(key);
+    if (!this.started || !this.config.enabled) return;
     // Restart the pipeline with the new key (the probe reports a bad key at once).
     const wasOn = this.runtime !== null && this.runtime.ctx.state !== 'MUTED';
     this.runtime?.shutdown();
@@ -180,18 +194,25 @@ export class ElectronVoice {
     if (!value) return this.refusal ? { ...initialVoiceSnapshot(), lastError: this.refusal, toast: { id: 1, message: this.refusal, level: 'warn' } } : null;
     return value;
   }
-  /** `voice selftest`: 1 s of real capture through the tap; expect 16000 ± 1 % samples/s. */
-  async selfTest(): Promise<VoiceSelfTest> {
-    if (!this.runtime || this.runtime.ctx.state === 'MUTED') return { ok: false, samplesPerSecond: 0, peakDbfs: null, message: 'Turn the microphone on first.' };
+  /** `voice selftest`: 2 s of real capture through the tap; allow 2.5% IPC batching jitter. */
+  selfTest(): Promise<VoiceSelfTest> {
+    if (this.selfTestPending) return this.selfTestPending;
+    const pending = this.runSelfTest().finally(() => { if (this.selfTestPending === pending) this.selfTestPending = null; });
+    this.selfTestPending = pending; return pending;
+  }
+  private async runSelfTest(): Promise<VoiceSelfTest> {
+    if (!this.runtime?.snapshot().captureOpen) return { ok: false, samplesPerSecond: 0, peakDbfs: null, message: 'Turn the microphone on first.' };
+    const runtime = this.runtime;
     let samples = 0, peak = -Infinity;
     const started = performance.now();
     this.selfTestTap = pcm => { samples += pcm.length; peak = Math.max(peak, peakDbfs(pcm)); };
     await new Promise(resolve => setTimeout(resolve, 2000));
     this.selfTestTap = null;
+    if (this.runtime !== runtime || !runtime.snapshot().captureOpen) return { ok: false, samplesPerSecond: 0, peakDbfs: null, message: 'Microphone capture changed during the test. Try again.' };
     const rate = samples / ((performance.now() - started) / 1000);
     const ok = Math.abs(rate - 16000) <= 160 * 2.5; // IPC batching jitter over a 2 s window
     const quiet = peak < -45;
-    const message = `${Math.round(rate)} samples/s${ok ? '' : ' (expected 16000)'}; peak ${Number.isFinite(peak) ? peak.toFixed(1) : '−∞'} dBFS${quiet ? ' — very quiet input will hurt wake recall' : ''}`;
+    const message = `${Math.round(rate)} samples/s${ok ? '' : ' (expected 16000)'}; peak ${Number.isFinite(peak) ? peak.toFixed(1) : '−∞'} dBFS${quiet ? ' — very quiet input will hurt command recognition' : ''}`;
     this.log('info', { selftest: message });
     return { ok: ok && !quiet, samplesPerSecond: Math.round(rate), peakDbfs: Number.isFinite(peak) ? peak : null, message };
   }
@@ -205,11 +226,13 @@ export class ElectronVoice {
   get keySource(): 'env' | 'settings' | null { return this.keys.source; }
   /** Resolves once the inference thread has exited: the native addon must not be torn down mid-process-exit. */
   async stop(): Promise<void> {
-    globalShortcut.unregister(this.config.ptt.hotkey); globalShortcut.unregister(this.config.ptt.muteHotkey);
+    this.started = false;
+    for (const key of this.hotkeys) globalShortcut.unregister(key);
+    this.hotkeys.clear();
     this.runtime?.shutdown(); this.runtime = null;
     const worker = this.worker; this.worker = null;
-    this.lock.release();
     if (worker) await this.terminate(worker);
+    await this.logger.flush();
   }
   /**
    * sherpa-onnx aborts the whole process if its thread is killed inside a native call, so the worker
@@ -218,8 +241,12 @@ export class ElectronVoice {
   private async terminate(worker: Worker): Promise<void> {
     const exited = new Promise<void>(resolve => worker.once('exit', () => resolve()));
     worker.postMessage({ type: 'exit' } satisfies InferenceRequest);
-    const timeout = (ms: number) => new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), ms));
-    if (await Promise.race([exited, timeout(3000)]) === 'timeout') await Promise.race([worker.terminate(), timeout(1500)]);
+    const wait = async (completion: Promise<unknown>, ms: number): Promise<unknown> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { return await Promise.race([completion, new Promise<'timeout'>(resolve => { timer = setTimeout(() => resolve('timeout'), ms); })]); }
+      finally { clearTimeout(timer); }
+    };
+    if (await wait(exited, 3000) === 'timeout') await wait(worker.terminate(), 1500);
   }
 
   private toPanel(command: VoiceCaptureCommand): void {
@@ -232,16 +259,13 @@ export class ElectronVoice {
   }
   private log(level: 'debug' | 'info' | 'warn', fields: Record<string, unknown>): void {
     if (level === 'debug' && !process.env.STEADY_VOICE_DEBUG) return;
-    try {
-      mkdirSync(path.dirname(this.logFile), { recursive: true });
-      if (existsSync(this.logFile) && statSync(this.logFile).size > 1_000_000) renameSync(this.logFile, `${this.logFile}.1`);
-      appendFileSync(this.logFile, `${JSON.stringify({ t: new Date().toISOString(), level, ...fields })}\n`);
-    } catch { /* logging never breaks voice */ }
+    this.logger.write(`${JSON.stringify({ t: new Date().toISOString(), level, ...fields })}\n`);
   }
 }
 
 function toInt16(data: unknown): Int16Array | null {
-  if (data instanceof ArrayBuffer) return new Int16Array(data.slice(0));
-  if (ArrayBuffer.isView(data) && data.byteLength % 2 === 0) return new Int16Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer);
+  // Reject malformed IPC before allocating; an odd ArrayBuffer used to throw here.
+  if (data instanceof ArrayBuffer && data.byteLength === FRAME_SAMPLES * 2) return new Int16Array(data.slice(0));
+  if (ArrayBuffer.isView(data) && data.byteLength === FRAME_SAMPLES * 2) return new Int16Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer);
   return null;
 }

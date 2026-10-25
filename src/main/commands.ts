@@ -9,8 +9,7 @@ export const defaultBindings = (): GlobalBindings => ({ penToggle: 'F8', pause: 
 export interface ShortcutProfile { name: string; targetBundleId: string; shortcuts: Record<'undo' | 'redo' | 'brush' | 'toggleErase' | 'bigger' | 'smaller', string> }
 export const kritaProfile = (): ShortcutProfile => ({ name: 'Krita', targetBundleId: 'org.krita', shortcuts: { undo: 'Command+Z', redo: 'Command+Shift+Z', brush: 'B', toggleErase: 'E', bigger: ']', smaller: '[' } });
 export const isLocalAction = (value: unknown): value is LocalActionID => typeof value === 'string' && ALL_CONTROLS.includes(value as LocalActionID);
-/** A tracked panel hit returns a semantic local command. Panel background consumes Click. */
-/** First overlay surface (panel, preview, toolbar) under the tracked pointer, with its button hit. */
+/** First overlay surface (panel or preview) under the tracked pointer, with its semantic button hit. */
 export function hitSurfaces(position: Point, surfaces: readonly { bounds: Rect; buttons: readonly { actionId: LocalActionID; rect: Rect }[] }[]): { inside: boolean; action: LocalActionID | null } {
   for (const surface of surfaces) { const hit = hitPanel(position, surface.bounds, surface.buttons); if (hit.inside) return hit; }
   return { inside: false, action: null };

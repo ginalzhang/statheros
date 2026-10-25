@@ -1,5 +1,7 @@
 # Implementation prompt: "Hey Cartesia" voice input (passive wake word + push-to-talk) via Cartesia Ink STT
 
+> Historical implementation specification. Its wake-word flow and milestone requirements describe the original design. The current command-word/open-mic behavior is documented in [README.md](README.md).
+
 > **How to use.** Paste into Claude Code (or any coding agent) opened at the root of the app repo. Fill in the three `<<PLACEHOLDERS>>` in §1 first. Follow the rest as written.
 > **Scope line.** Milestones M0–M2b (§15) are the deliverable. Nothing in the "Later" list may be started until M2b's live smoke test passes.
 > Cartesia facts (Appendix A) were verified against docs.cartesia.ai on 2026-10-24. If the live docs disagree, the docs win; say so in your final report.

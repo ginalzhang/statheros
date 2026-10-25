@@ -79,6 +79,23 @@ describe('CameraProbe lifecycle with fake media and worker', () => {
     expect(output.mock.lastCall?.[0].qualityReason).toBe('different hand label');
     expect(camera.confirmHand()).toBe(false);
   });
+  it('limits routine UI reports while mapping every inference result', async () => {
+    await camera.start('camera-1', 'palm');
+    const worker = FakeWorker.all[0]!; worker.receive({ type: 'ready', delegate: 'GPU' });
+    for (let i = 0; i < 30; i++) {
+      receiveFrame(i + 1); await vi.advanceTimersByTimeAsync(34);
+      worker.receive(result(worker.sent.filter(value => value.type === 'frame').at(-1)));
+    }
+    expect(output).toHaveBeenCalledTimes(30);
+    const reports = report.mock.calls.map(([value]) => value).filter(value => value.delegate === 'GPU' && value.frames > 0);
+    expect(reports.length).toBeLessThanOrEqual(11);
+    expect(reports.length).toBeGreaterThanOrEqual(9);
+    // A changed rejection must be shown immediately, even inside the reporting interval.
+    receiveFrame(31); await vi.advanceTimersByTimeAsync(34);
+    const next = worker.sent.filter(value => value.type === 'frame').at(-1);
+    worker.receive({ ...result(next), sample: { ...result(next).sample, valid: false, anchor: null, qualityReason: 'no subject' } });
+    expect(report.mock.lastCall?.[0].rejection).toBe('no subject');
+  });
   it('requires explicit restart after inference failure and ignores old-run messages', async () => {
     await camera.start('', 'palm'); const worker = FakeWorker.all[0]!;
     worker.receive({ type: 'ready', delegate: 'GPU' }); worker.receive({ type: 'fault', message: 'Inference failed; restart explicitly' });
