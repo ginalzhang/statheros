@@ -22,6 +22,29 @@ export function utilityPosition(view: UtilityView, workArea: Rect): { x: number;
   };
 }
 
+/** The helper refuses a canvas that intersects an excluded rect, and the Camera Preview is excluded.
+ * Returns the nearest origin that keeps the preview inside the work area and clear of the canvas and
+ * the given rects (8 pt gap), or null when nothing fits. */
+export function previewClearOf(preview: Rect, canvas: Rect, workArea: Rect, avoid: readonly Rect[]): { x: number; y: number } | null {
+  const gap = 8, grow = (r: Rect): Rect => ({ x: r.x - gap, y: r.y - gap, width: r.width + 2 * gap, height: r.height + 2 * gap });
+  const blocked = [canvas, ...avoid].map(grow);
+  const overlaps = (a: Rect, b: Rect): boolean => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+  const maxX = workArea.x + workArea.width - preview.width, maxY = workArea.y + workArea.height - preview.height;
+  if (maxX < workArea.x || maxY < workArea.y) return null;
+  // Candidate coordinates: every edge just outside a blocked rect, plus the work-area edges.
+  const xs = new Set([workArea.x, maxX, preview.x]), ys = new Set([workArea.y, maxY, preview.y]);
+  for (const r of blocked) { xs.add(r.x - preview.width); xs.add(r.x + r.width); ys.add(r.y - preview.height); ys.add(r.y + r.height); }
+  let best: { x: number; y: number } | null = null, bestDistance = Infinity;
+  for (const rawX of xs) for (const rawY of ys) {
+    const x = Math.round(Math.min(maxX, Math.max(workArea.x, rawX))), y = Math.round(Math.min(maxY, Math.max(workArea.y, rawY)));
+    const at = { x, y, width: preview.width, height: preview.height };
+    if (blocked.some(r => overlaps(at, r))) continue;
+    const distance = Math.hypot(x - preview.x, y - preview.y);
+    if (distance < bestDistance) { best = { x, y }; bestDistance = distance; }
+  }
+  return best;
+}
+
 /** Settings modal (~860 × 690) floats over Krita beside the compact panel; Figma scene x180, y100. */
 export const SETTINGS_WIDTH = 860, SETTINGS_HEIGHT = 690;
 export function settingsFrame(workArea: Rect): Rect {

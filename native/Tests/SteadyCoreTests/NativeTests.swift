@@ -6,11 +6,11 @@ import Testing
 private let session="00000000-0000-4000-8000-000000000001"
 private func envelope(_ type:String,_ payload:[String:JSONValue],seq:UInt64=1)->Envelope {Envelope(session:session,seq:seq,type:type,payload:.object(payload))}
 private final class Harness {
- let backend:FakeBackend;let engine:NativeEngine;var seq:UInt64=0;var generation:Double=1
+ let backend:FakeBackend;let engine:NativeEngine;var seq:UInt64=0
  init(backend:FakeBackend=FakeBackend(),boundedProbe:Bool=false){self.backend=backend;engine=NativeEngine(backend:backend,boundedProbe:boundedProbe);_ = send("hello",["bundleId":.string("org.steady.local")]);_ = send("configure",["generation":.number(1),"targetBundleId":.string("org.krita"),"targetPid":.number(123),"displayId":.number(1),"canvas":.encoded(Rect(x:-1000,y:100,width:500,height:500)),"excludedRects":.array([])])}
  @discardableResult func send(_ type:String,_ p:[String:JSONValue],now:Double=1000)->Envelope{seq+=1;return engine.handle(envelope(type,p,seq:seq),now:now)}
- @discardableResult func sample(_ frame:Int,_ time:Double,now:Double?=nil,point:Point=Point(x:-800,y:200))->Envelope{send("sample",["generation":.number(generation),"frameId":.number(Double(frame)),"captureTimestamp":.number(time),"valid":.bool(true),"position":.encoded(point)],now:now ?? time)}
- @discardableResult func action(_ a:ActionID,now:Double=1500,event:String=UUID().uuidString)->Envelope{send("action",["generation":.number(generation),"eventId":.string(event),"actionId":.string(a.rawValue)],now:now)}
+ @discardableResult func sample(_ frame:Int,_ time:Double,now:Double?=nil,point:Point=Point(x:-800,y:200))->Envelope{send("sample",["generation":.number(1),"frameId":.number(Double(frame)),"captureTimestamp":.number(time),"valid":.bool(true),"position":.encoded(point)],now:now ?? time)}
+ @discardableResult func action(_ a:ActionID,now:Double=1500,event:String=UUID().uuidString)->Envelope{send("action",["generation":.number(1),"eventId":.string(event),"actionId":.string(a.rawValue)],now:now)}
  func ready(){for i in 0...5{sample(i+1,1000+Double(i)*100)};action(.resume)}
 }
 private func accepted(_ e:Envelope)->Bool{e.payload.object?["accepted"]?.bool==true}
@@ -300,21 +300,4 @@ private func accepted(_ e:Envelope)->Bool{e.payload.object?["accepted"]?.bool==t
  #expect(h.sample(8,1520,point:Point(x:maximum.x.nextUp,y:maximum.y)).payload.object?["code"]?.string=="invalid-sample")
  #expect(h.sample(9,1530,point:Point(x:maximum.x,y:maximum.y.nextUp)).payload.object?["code"]?.string=="invalid-sample")
  #expect(h.backend.positions.count==positions);#expect(h.engine.snapshot.latestValidFrame==7)
-}
-
-@Test func previewCanOverlapCanvasButStillBlocksDrawingAndClicks() {
- let h=Harness()
- let canvas=Rect(x:-1000,y:100,width:500,height:500)
- let panel=Rect(x:-400,y:100,width:200,height:500)
- let preview=Rect(x:-900,y:300,width:100,height:100)
- #expect(accepted(h.send("configure",["generation":.number(2),"targetBundleId":.string("org.krita"),"targetPid":.number(123),"displayId":.number(1),"canvas":.encoded(canvas),"excludedRects":.encoded([panel,preview])])))
- h.generation=2;h.ready();#expect(accepted(h.action(.penDown)))
- h.sample(7,1510,point:Point(x:-850,y:350))
- #expect(!h.engine.snapshot.buttonDown);#expect(h.engine.snapshot.state == .hover)
- let events=h.backend.events
- #expect(!accepted(h.action(.penDown,now:1510)))
- #expect(!accepted(h.action(.click,now:1510)))
- #expect(!h.backend.events.dropFirst(events.count).contains("down"))
- h.sample(8,1520,point:Point(x:-800,y:200))
- #expect(accepted(h.action(.penDown,now:1520)))
 }

@@ -55,5 +55,3 @@ Structural diagnostics contain the inspected count, search completeness, truncat
 `restoreTarget` accepts only a bounded positive `targetPid` for the currently discovered `org.krita` process, releases input, leaves the engine paused, and asks the running application to activate. Its acknowledgment means activation was requested, not that macOS has already delivered the foreground notification. Callers must wait for refreshed foreground metadata before requiring Krita foreground again. It does not post keyboard or mouse input.
 
 Live Krita Accessibility geometry, mouse click isolation, focus restoration, fullscreen/Spaces, and mixed-display acceptance require an operator session. Compilation and synthetic fixtures do not establish those outcomes. No live validation is performed automatically.
-
-Canvas configuration orders `excludedRects` with the persistent panel first, followed by floating utility windows. The panel must remain outside the canvas; utility windows may overlap it. Every excluded rectangle releases a held pen on entry and rejects Pen Down and Click.

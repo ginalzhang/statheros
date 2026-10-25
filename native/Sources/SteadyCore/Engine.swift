@@ -134,9 +134,7 @@ public final class NativeEngine: @unchecked Sendable {
    guard let generation=p["generation"]?.uint,generation>state.generation,let pid=p["targetPid"]?.uint,let did=p["displayId"]?.uint,let d=reportedDisplays.first(where:{UInt64($0.id)==did}) else{return reply(req,accepted:false,code:"configuration",now:now)}
    let c = p["canvas"] == .null ? nil : try? p["canvas"]?.decode(Rect.self)
    let rs=(try? p["excludedRects"]?.decode([Rect].self)) ?? []
-   // The first exclusion is the persistent panel; later utility windows may overlap
-   // the canvas, but every exclusion still blocks penDown/click and releases a stroke.
-   if let c, (c.width<100 || c.height<100 || !d.bounds.contains(c) || rs.first?.intersects(c)==true) {return reply(req,accepted:false,code:"canvas-bounds",now:now)}
+   if let c, (c.width<100 || c.height<100 || !d.bounds.contains(c) || rs.contains(where:{$0.intersects(c)})) {return reply(req,accepted:false,code:"canvas-bounds",now:now)}
    guard release() else{return reply(req,accepted:false,code:"native-release-failed",now:now)};targetPid=Int32(pid);backend.setTarget(pid:targetPid);display=d;canvas=c;excluded=rs;state.generation=generation;state.state = c==nil ? .setup : .paused;state.reason="configured";setupStartedAt=c==nil ? now : nil;lastCapture=nil;lastFrame=nil;state.latestValidFrame=nil;state.lastValidCaptureTimestamp=nil;validSince=nil;events.removeAll()
   case "sample":
    guard p["generation"]?.uint==state.generation,state.generation>0 else{return reply(req,accepted:false,code:"generation",now:now)}

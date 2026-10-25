@@ -55,7 +55,6 @@ export interface NativeState { lastReleaseTimestamp?: number | null; lastValidCa
 export interface DisplayInfo { id: number; bounds: Rect; workArea: Rect; builtIn: boolean; primary: boolean; scaleFactor: number }
 export interface RequestPayloads {
   hello: { bundleId: 'org.steady.local' };
-  /** Exclusions are ordered: persistent panel first (must not overlap canvas), then utility windows. */
   configure: { generation: number; targetBundleId: 'org.krita'; targetPid: number; displayId: number; canvas: Rect | null; excludedRects: Rect[] };
   sample: { generation: number; frameId: number; captureTimestamp: number; valid: boolean; position: Point | null };
   action: { generation: number; eventId: string; actionId: ActionID };
