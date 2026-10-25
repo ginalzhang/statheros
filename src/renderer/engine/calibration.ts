@@ -1,4 +1,5 @@
 import type { CalibrationV1, Mode, Point, TrackingSample } from '../../shared/contracts';
+import { rejectionHint } from '../tracking';
 
 export const CALIBRATION_STEPS = ['neutral', 'left', 'right', 'up', 'down'] as const;
 export type CaptureStep = typeof CALIBRATION_STEPS[number];
@@ -32,6 +33,7 @@ export class CalibrationCapture {
   private lastFrame = -1;
   private lastTimestamp = -Infinity;
   private hand: HandLabel | null;
+  private rejections = new Map<string, number>();
   constructor(readonly context: CaptureContext, readonly startedAt: number) {
     if (!validContext(context) || !finite(startedAt) || startedAt < 0) throw new Error('Invalid calibration capture context');
     this.context = { ...context };
@@ -43,20 +45,30 @@ export class CalibrationCapture {
     this.lastFrame = sample.frameId;
     this.lastTimestamp = sample.captureTimestamp;
     this.frames++;
-    if (!sample.valid || !normalizedPoint(sample.anchor)) return false;
+    if (!sample.valid || !normalizedPoint(sample.anchor)) return this.reject(sample.qualityReason || 'invalid landmark');
     if (this.context.mode === 'palm') {
       const label = sample.selectedHand;
-      if (label !== 'Left' && label !== 'Right') return false;
-      if (this.hand !== null && this.hand !== label) return false;
+      if (label !== 'Left' && label !== 'Right') return this.reject('missing handedness label');
+      if (this.hand !== null && this.hand !== label) return this.reject('different hand label');
       this.hand = label;
     }
     this.points.push({ ...sample.anchor });
     return true;
   }
+  private reject(reason: string): false {
+    this.rejections.set(reason, (this.rejections.get(reason) ?? 0) + 1);
+    return false;
+  }
+  /** The most common rejection, in plain language, so a failed Capture says what to fix. */
+  private dominantRejection(): string {
+    const top = [...this.rejections.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (!top) return this.frames === 0 ? ' No tracking frames arrived; check the camera.' : '';
+    return ` Most frames: ${(rejectionHint(top[0], this.context.mode) ?? top[0]).replace(/^./, c => c.toLowerCase())}.`;
+  }
   finish(now: number): CaptureResult {
     if (!finite(now) || now < this.deadline) return { ok: false, reason: 'Capture is still sampling for two seconds' };
-    if (this.points.length < 40) return { ok: false, reason: `Need at least 40 valid samples; received ${this.points.length}. Retry or Cancel.` };
-    if (this.points.length / this.frames < 0.8) return { ok: false, reason: `Need at least 80% valid frames; received ${Math.round(100 * this.points.length / this.frames)}%. Retry or Cancel.` };
+    if (this.points.length < 40) return { ok: false, reason: `Need at least 40 valid samples; received ${this.points.length}.${this.dominantRejection()} Retry or Cancel.` };
+    if (this.points.length / this.frames < 0.8) return { ok: false, reason: `Need at least 80% valid frames; received ${Math.round(100 * this.points.length / this.frames)}%.${this.dominantRejection()} Retry or Cancel.` };
     const x = this.points.map(point => point.x), y = this.points.map(point => point.y);
     return { ok: true, capture: { position: { x: median(x), y: median(y) }, jitter: { x: scaledMAD(x), y: scaledMAD(y) }, validSamples: this.points.length, totalFrames: this.frames, selectedHand: this.hand } };
   }
@@ -106,6 +118,8 @@ export class CalibrationSession {
   get step(): CaptureStep | null { return CALIBRATION_STEPS[this.index] ?? null; }
   get active(): boolean { return this.capture !== null; }
   get captures(): Partial<Record<CaptureStep, CaptureSummary>> { return structuredClone(this.values); }
+  /** The neutral capture, once taken (read-only; used for the live calibration guide). */
+  get neutral(): Readonly<CaptureSummary> | undefined { return this.values.neutral; }
   start(now: number): void {
     if (this.active || this.step === null) throw new Error('No available capture step');
     this.capture = new CalibrationCapture({ ...this.context, selectedHand: this.values.neutral?.selectedHand ?? this.context.selectedHand }, now);

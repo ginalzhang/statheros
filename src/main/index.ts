@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { NativeSupervisor } from './supervisor';
 import { emptySpeechDiagnostics, isSpeechDiagnosticError, SpeechDiagnosticRecorder } from './speech-diagnostics';
 import { LiveProbe } from './live-probe';
-import { canvasSelectionControlsFrame, panelPosition, preferredDisplay, sameCanvasSelectionDisplay } from './panel';
+import { PANEL_COLLAPSED_HEIGHT, PANEL_HEIGHT, PANEL_WIDTH, canvasSelectionControlsFrame, panelPosition, preferredDisplay, sameCanvasSelectionDisplay } from './panel';
 import { CanvasCapture, containsPoint, fitWorkspaceSuggestion, intersects, validateCanvas } from './canvas';
 import { CanvasSetup, canvasIdentity, freshCanvasObservation, freshWorkspaceSuggestion, routeCanvasObservation, sameCanvasRect } from './canvas-setup';
 import { CanvasDiagnostics } from './canvas-diagnostics';
@@ -23,6 +23,12 @@ import { deliverCommand } from './command-delivery';
 import { SettingsStore } from './settings';
 import { defaultSettings, withCalibration } from '../shared/settings';
 import { isCalibrationV1 } from '../renderer/engine';
+import { ElectronVoice } from './voice/electron-voice';
+import { dispatchVoiceCommand } from './voice/command-dispatch';
+import { anthropicKey, createIntentClient, interpretIntent, type IntentClient } from './voice/intent';
+import { explainRejection } from './rejections';
+import type { CommandEvent } from './voice/types';
+import type { VoiceCaptureReport } from '../shared/voice';
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
 
@@ -45,6 +51,7 @@ let panelGeometryEpoch = 0;
 let movingPanelProgrammatically = false;
 const bindingInstaller = new GlobalBindingInstaller(globalShortcut);
 let panel: BrowserWindow | null = null, settings: BrowserWindow | null = null, supervisor: NativeSupervisor | null = null;
+let voice: ElectronVoice | null = null;
 let quitting = false, generation = 1;
 let settingsStore: SettingsStore;
 const configuration = new ConfigurationQueue();
@@ -350,7 +357,8 @@ function fixedKritaProfile(): boolean {
     (Object.keys(expected.shortcuts) as (keyof typeof expected.shortcuts)[]).every(key => actual.shortcuts[key] === expected.shortcuts[key]);
 }
 function enqueueAction(action: LocalActionID, eventId = randomUUID()): Promise<Ack | null> {
-  return deliverCommand(configuration, () => generation, action, () => dispatch(action, eventId));
+  return deliverCommand(configuration, () => generation, action, () => dispatch(action, eventId))
+    .catch((error: unknown) => { throw error instanceof Error ? new Error(explainRejection(error.message, status.native)) : error; });
 }
 async function dispatch(actionId: LocalActionID, eventId: string = randomUUID()): Promise<Ack | null> {
   if (!isLocalAction(actionId)) throw new Error('Unknown action');
@@ -439,25 +447,32 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
   status.fault = null; publish(); return ack;
 }
 async function collapsePanel(collapsed: boolean): Promise<void> {
-  status.collapsed = collapsed; panel?.setSize(320, collapsed ? 96 : 560, false); buttons = [];
+  status.collapsed = collapsed; panel?.setSize(PANEL_WIDTH, collapsed ? PANEL_COLLAPSED_HEIGHT : PANEL_HEIGHT, false); buttons = [];
   // Native exclusion geometry changes are serialized and always leave input paused.
   await pause('Panel geometry changed; Resume when ready.');
   if (canvasCapture.active || selectionOverlay) invalidateCanvas();
   generation++; await configureControl(); publish();
 }
 
+/** Voice input (Cartesia STT + local wake word) replaces the deferred native speech path; the helper's microphone stays off. */
 async function microphone(enabled: boolean): Promise<void> {
-  if (enabled) throw new Error('Voice input is deferred to Phase 04; microphone stays off.');
-  const nextSession = randomUUID(); speechSession = enabled ? nextSession : null; speechSeen.clear();
-  if(enabled){status.speechDiagnostics=undefined;publish();}
-  const request=++microphoneRequest;
-  try {await supervisor?.request('microphone', { enabled, speechSession:nextSession });if(request===microphoneRequest){if(!enabled)status.microphoneEnabled=false;publish();}}
-  catch(error){if(request===microphoneRequest){speechSession=null;status.microphoneEnabled=false;publish();}throw error;}
+  if (!voice) throw new Error('Voice input is unavailable.');
+  voice.setMicrophone(enabled);
 }
-let microphoneRequest=0;
+let intentClient: IntentClient | null | undefined;
+async function interpretWithClaude(text: string): Promise<ActionID | null> {
+  if (intentClient === undefined) { const key = anthropicKey(); intentClient = key ? createIntentClient(key) : null; }
+  if (!intentClient) return null;
+  try { return await interpretIntent(intentClient, text); }
+  catch (error) { console.warn('Claude intent failed:', error instanceof Error ? error.message : error); return null; }
+}
+/** <<COMMAND_ENTRYPOINT>> for voice: the shared dispatcher, resolving after the native ack. */
+async function executeVoiceCommand(command: CommandEvent): Promise<string | null> {
+  return dispatchVoiceCommand(command, enqueueAction, interpretWithClaude);
+}
 function initialPanelPosition(): {x:number;y:number} {
   const display = screen.getAllDisplays().find(d=>d.internal) ?? screen.getPrimaryDisplay();
-  return { x:display.workArea.x+display.workArea.width-320-16, y:display.workArea.y+16 };
+  return { x:display.workArea.x+display.workArea.width-PANEL_WIDTH-16, y:display.workArea.y+16 };
 }
 function updateDisplays(displays:DisplayInfo[],forcePosition=false):void {
   const previous=status.displays.find(display=>display.id===status.selectedDisplayId);
@@ -591,12 +606,37 @@ function installIPC(): void {
     savedSettings=withCalibration(savedSettings,value);settingsStore.save(savedSettings);trackingEvidence('calibration-saved',value);status.settings=savedSettings;status.canvasConfirmed=false;generation++;
     invalidateCanvas(); await configureControl();publish();
   }));
+  // Stroke/motion tuning: gain and smoothing only. Canvas geometry is unaffected, so no reconfirmation;
+  // a held pen is released first so a mapping change can never extend a stroke.
+  handle('tune-calibration',(value:unknown)=>configuration.run(async()=>{
+    if(!isCalibrationV1(value)||value.cameraId!==savedSettings.cameraId||value.mode!==savedSettings.mode)throw new Error('Calibration does not match selected camera/mode');
+    const current=savedSettings.calibrations.find(c=>c.cameraId===value.cameraId&&c.mode===value.mode);
+    const fixed=(c:typeof value)=>JSON.stringify([c.schemaVersion,c.selectedHand,c.neutral.x,c.neutral.y,c.extents.left,c.extents.right,c.extents.up,c.extents.down,c.jitter.x,c.jitter.y]);
+    if(!current||fixed(current)!==fixed(value))throw new Error('Only smoothing and sensitivity can be tuned from the panel');
+    if(status.native?.buttonDown)await supervisor?.request('action',{generation,eventId:randomUUID(),actionId:'penUp'});
+    savedSettings=withCalibration(savedSettings,value);settingsStore.save(savedSettings);status.settings=savedSettings;publish();
+  }));
+  // Orientation changes the tracked coordinate space: the camera's saved calibrations no longer apply.
+  handle('set-orientation',(cameraId:unknown,flipX:unknown,flipY:unknown)=>configuration.run(async()=>{
+    if(typeof cameraId!=='string'||cameraId.length>1024||typeof flipX!=='boolean'||typeof flipY!=='boolean')throw new Error('Invalid camera orientation');
+    await pause('Camera orientation changed; recalibrate');generation++;
+    const orientations=[...(savedSettings.orientations??[]).filter(entry=>entry.cameraId!==cameraId),...(flipX||flipY?[{cameraId,flipX,flipY}]:[])];
+    savedSettings={...savedSettings,orientations,calibrations:savedSettings.calibrations.filter(c=>c.cameraId!==cameraId)};
+    if(!orientations.length)delete savedSettings.orientations;
+    settingsStore.save(savedSettings);status.settings=savedSettings;status.canvasConfirmed=false;
+    invalidateCanvas();await configureControl();status.fault='Camera orientation changed; recalibrate';publish();
+  }));
+  handle('panel-opacity',(opacity:unknown)=>{if(opacity!==1&&opacity!==0.7)throw new Error('Invalid opacity');panel?.setOpacity(opacity);status.panelOpacity=opacity;publish();});
   handle('select-display',(displayId:unknown)=>configuration.run(async()=>{
     if(!uint(displayId)||!status.displays.some(display=>display.id===displayId))throw new Error('Unknown native display');
     await pause('Selected display changed; canvas invalidated');generation++;status.selectedDisplayId=displayId;buttons=[];status.canvasConfirmed=false;invalidateCanvas();updateDisplays(status.displays,true); await configureControl();
   }));
   handle('microphone',async(enabled:unknown)=>{if(typeof enabled!=='boolean')throw new Error('Invalid microphone flag');await microphone(enabled);});
-  handle('install-speech-assets',async()=>{throw new Error('Speech setup is deferred to Phase 04.');});
+  handle('install-speech-assets',async()=>{throw new Error('Apple speech assets are not used; voice uses Cartesia.');});
+  handle('voice-status',()=>({snapshot:voice?.snapshot()??null,keySource:voice?.keySource??null}));
+  handle('voice-key',(key:unknown)=>{if(key!==null&&(typeof key!=='string'||key.length>256))throw new Error('Invalid key');voice?.setKey(key);});
+  handle('voice-selftest',()=>voice?.selfTest()??{ok:false,samplesPerSecond:0,peakDbfs:null,message:'Voice unavailable'});
+  handle('voice-latency',()=>voice?.latency()??null);
   handle('release-input',()=>{
     stopLiveProbe();
     releaseRealInput();
@@ -626,6 +666,15 @@ function installIPC(): void {
     pointer = sample.valid ? { position: position as Point, timestamp: sample.captureTimestamp, generation } : null;
     if(supervisor?.state?.generation===generation)supervisor.submit(sample, sample.valid ? position as Point : null, sample.captureTimestamp);
   });
+  ipcMain.on('steady:voice-frame',(event,pcm:unknown)=>{if(event.sender!==panel?.webContents||event.senderFrame!==event.sender.mainFrame)return;voice?.frame(pcm);});
+  ipcMain.on('steady:voice-report',(event,report:unknown)=>{
+    if(event.sender!==panel?.webContents||!isObject(report)||typeof report.type!=='string')return;
+    if(['opened','deviceChanged'].includes(report.type))voice?.report({type:report.type} as VoiceCaptureReport);
+    else if(report.type==='failed'&&typeof report.reason==='string')voice?.report({type:'failed',reason:report.reason.slice(0,200)});
+    else if((report.type==='earconStarted'||report.type==='earconStopped')&&typeof report.playId==='string'&&report.playId.length<=64)voice?.report({type:report.type,playId:report.playId});
+  });
+  ipcMain.on('steady:voice-button',(event,kind:unknown)=>{trusted(event);if(kind==='press'||kind==='longpress')voice?.button(kind);});
+  ipcMain.on('steady:voice-cancel',(event)=>{trusted(event);voice?.cancel();});
   ipcMain.on('steady:clock-fault',(event,message:unknown)=>{trusted(event);void pause(typeof message==='string'?message:'Renderer clock synchronization failed');});
 }
 async function startNative(): Promise<void> {
@@ -717,7 +766,7 @@ async function main(): Promise<void> {
     return net.fetch(pathToFileURL(filename).href);
   });
   try { verifyResources();resourcesReady=true; } catch(error) { fault(String(error)); }
-  panel=new BrowserWindow({ ...initialPanelPosition(),width:320,height:560,resizable:false,frame:false,show:false,type:'panel',focusable:false,alwaysOnTop:true,skipTaskbar:true,title:'Steady',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false} });
+  panel=new BrowserWindow({ ...initialPanelPosition(),width:PANEL_WIDTH,height:PANEL_HEIGHT,resizable:false,frame:false,transparent:true,hasShadow:true,show:false,type:'panel',focusable:false,alwaysOnTop:true,skipTaskbar:true,title:'Steady',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false} });
   panel.setAlwaysOnTop(true,'floating'); panel.setVisibleOnAllWorkspaces(true,{visibleOnFullScreen:true}); secureWindow(panel);
   panel.on('close',()=>{if(!quitting)app.quit();});
   let panelGeometryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -734,6 +783,10 @@ async function main(): Promise<void> {
     }).catch(error=>fault(String(error))).finally(()=>{if(epoch===panelGeometryEpoch)panelGeometryPending=false;});},100);
   });
   installIPC();await loadView(panel,'panel');panel.showInactive();
+  voice=new ElectronVoice({buildDir:__dirname,voiceRoot:path.join(resourcesRoot(),'voice'),packaged:app.isPackaged,userData:app.getPath('userData'),
+    panel:()=>panel,windows:()=>[panel,settings],execute:executeVoiceCommand,microphoneChanged:open=>{status.microphoneEnabled=open;publish();}});
+  voice.start();
+  app.on('browser-window-focus',()=>voice?.appFocused());
   await startNative(); installBindings();
   const detectionHealth = setInterval(()=>{
     if (canvasSetup.preference !== 'automatic' || !canvas || performance.now()-latestCanvasReceivedAt < 2000 || canvasObservationPending) return;
@@ -766,7 +819,7 @@ async function main(): Promise<void> {
 app.on('before-quit',event=>{
   if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;quitting=true;bindingInstaller.clear();
   stopLiveProbe();
-  void supervisor?.stop().finally(()=>app.quit());if(!supervisor)app.quit();
+  void Promise.allSettled([voice?.stop(),supervisor?.stop()]).finally(()=>app.quit());
 });
 app.on('window-all-closed',()=>{if(!quitting)app.quit();});
 void main().catch(error=>fault(String(error)));

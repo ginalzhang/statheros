@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { estimateClock, type ClockRoundTrip } from './clock';
+import type { VoiceCaptureCommand, VoiceCaptureReport, VoiceSnapshot } from '../shared/voice';
 import type { ActionID, LocalActionID, GlobalBindings, ShortcutProfile, CalibrationV1, CanvasSelection, CanvasSurfaceSession, Point, TrackingProbeMetrics, Mode, ProbeStatus, Rect, SteadyAPI, TrackingSample } from '../shared/contracts';
 
 const auxiliaryCanvasView = ['canvas-overlay', 'canvas-outline'].includes(new URLSearchParams(location.search).get('view') ?? '');
@@ -80,6 +81,9 @@ const api: SteadyAPI = Object.freeze({
   recordTrackingMetrics: (metrics: TrackingProbeMetrics): Promise<void> => ipcRenderer.invoke('steady:tracking-metrics', metrics),
   onRecenter: (callback: () => void): (() => void) => { const handler = (): void => callback(); ipcRenderer.on('steady:recenter', handler); return () => { ipcRenderer.removeListener('steady:recenter', handler); }; },
   saveCalibration: (calibration: CalibrationV1): Promise<void> => ipcRenderer.invoke('steady:save-calibration', calibration),
+  tuneCalibration: (calibration: CalibrationV1): Promise<void> => ipcRenderer.invoke('steady:tune-calibration', calibration),
+  setPanelOpacity: (opacity: 1 | 0.7): Promise<void> => ipcRenderer.invoke('steady:panel-opacity', opacity),
+  setCameraOrientation: (cameraId: string, flipX: boolean, flipY: boolean): Promise<void> => ipcRenderer.invoke('steady:set-orientation', cameraId, flipX, flipY),
   submitMappedProbe: (sample: TrackingSample, position: Point | null): void => { if (clockReady) ipcRenderer.send('steady:mapped-probe', { ...sample, captureTimestamp: sample.captureTimestamp + clockOffset }, position); },
   microphone: (enabled: boolean): Promise<void> => ipcRenderer.invoke('steady:microphone', enabled),
   installSpeechAssets: (): Promise<void> => ipcRenderer.invoke('steady:install-speech-assets'),
@@ -87,5 +91,15 @@ const api: SteadyAPI = Object.freeze({
   releaseInput: (): Promise<void> => ipcRenderer.invoke('steady:release-input'),
   registerButtons: (buttons: { actionId: LocalActionID; rect: Rect }[]): void => ipcRenderer.send('steady:register-buttons', buttons),
   quit: (): Promise<void> => ipcRenderer.invoke('steady:quit'),
+  voiceStatus: () => ipcRenderer.invoke('steady:voice-status'),
+  onVoice: (callback: (snapshot: VoiceSnapshot | null, keySource: 'env' | 'settings' | null) => void): (() => void) => { const handler = (_event: Electron.IpcRendererEvent, snapshot: VoiceSnapshot | null, keySource: 'env' | 'settings' | null): void => callback(snapshot, keySource); ipcRenderer.on('steady:voice-changed', handler); return () => { ipcRenderer.removeListener('steady:voice-changed', handler); }; },
+  onVoiceCapture: (callback: (command: VoiceCaptureCommand) => void): (() => void) => { const handler = (_event: Electron.IpcRendererEvent, command: VoiceCaptureCommand): void => callback(command); ipcRenderer.on('steady:voice-capture', handler); return () => { ipcRenderer.removeListener('steady:voice-capture', handler); }; },
+  voiceFrame: (pcm: ArrayBuffer): void => ipcRenderer.send('steady:voice-frame', new Uint8Array(pcm)),
+  voiceReport: (report: VoiceCaptureReport): void => ipcRenderer.send('steady:voice-report', report),
+  voiceButton: (kind: 'press' | 'longpress'): void => ipcRenderer.send('steady:voice-button', kind),
+  voiceCancel: (): void => ipcRenderer.send('steady:voice-cancel'),
+  setVoiceKey: (key: string | null): Promise<void> => ipcRenderer.invoke('steady:voice-key', key),
+  voiceSelfTest: () => ipcRenderer.invoke('steady:voice-selftest'),
+  voiceLatency: () => ipcRenderer.invoke('steady:voice-latency'),
 });
 contextBridge.exposeInMainWorld('steady', api);

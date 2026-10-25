@@ -7,7 +7,7 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
   const env=Object.fromEntries(Object.entries(process.env).filter((entry):entry is [string,string]=>entry[1]!==undefined));delete env.ELECTRON_RUN_AS_NODE;
   const app=await _electron.launch({executablePath:path.resolve('out/Steady-darwin-arm64/Steady.app/Contents/MacOS/Steady'),args:[`--user-data-dir=${mkdtempSync(path.join(os.tmpdir(),'steady-phase03-e2e-'))}`,'--test-fake-backend','--use-fake-device-for-media-stream=fps=30','--use-fake-ui-for-media-stream'],env,timeout:15000});
   try{
-    const page=await app.firstWindow();await expect(page.getByText('Steady',{exact:true}).first()).toBeVisible();
+    const page=await app.firstWindow();await expect(page.getByText('Statheros',{exact:true}).first()).toBeVisible();
     // Main-inspector evaluation can pause Electron's monotonic RTT measurement.
     // Wait through native startup via renderer IPC before inspecting the main VM.
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).nativeClockReady),{timeout:5000}).toBe(true);
@@ -16,7 +16,7 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
       const w=BrowserWindow.getAllWindows()[0]!;
       return {packaged:app.isPackaged,size:w.getSize(),focusable:w.isFocusable(),alwaysOnTop:w.isAlwaysOnTop(),allSpaces:w.isVisibleOnAllWorkspaces(),url:w.webContents.getURL()};
     });
-    expect(info).toMatchObject({packaged:true,size:[320,560],focusable:false,alwaysOnTop:true,allSpaces:true});
+    expect(info).toMatchObject({packaged:true,size:[300,660],focusable:false,alwaysOnTop:true,allSpaces:true});
     expect(info.url).toMatch(/^file:/);
     const status=await page.evaluate(()=>window.steady.status());expect(status.realInput).toBe(false);expect(status.fault).toBeNull();expect(status.native?.buttonDown).toBe(false);
     await expect(page.evaluate(()=>window.steady.setRealInput(true))).rejects.toThrow('Real input requires');
@@ -48,17 +48,17 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     // Settings and panel are separate packaged file:// windows. Verify their
     // control/report transport without opening any camera or microphone.
     const settingsPromise=app.waitForEvent('window');await page.evaluate(()=>window.steady.openSettings());const settings=await settingsPromise;await settings.waitForLoadState();
-    await expect(settings.getByText('Voice input is deferred to Phase 04. Use the panel controls or configured keys.')).toBeVisible();
-    await expect(settings.getByRole('button',{name:'Enable microphone',exact:true})).toHaveCount(0);
-    await expect(settings.getByRole('button',{name:'Set up speech assets',exact:true})).toHaveCount(0);
-    for(const attempt of ['microphone','assets'] as const){
-      const error=await settings.evaluate(async attempt=>{try{if(attempt==='microphone')await window.steady.microphone(true);else await window.steady.installSpeechAssets();return null;}catch(error){return String(error);}},attempt);
-      expect(error).toContain('deferred to Phase 04');
-    }
-    await settings.getByRole('button',{name:'Disable microphone',exact:true}).click();
+    // Voice launches microphone-off (plan §2): wake listening needs an explicit mic-on, so no prompt here.
+    await expect(settings.getByRole('heading',{name:'Voice commands',exact:true})).toBeVisible();
+    await expect(settings.getByRole('button',{name:'Turn microphone on',exact:true})).toBeVisible();
+    await expect(page.getByRole('switch',{name:'Voice Commands',exact:true})).toHaveAttribute('aria-checked','false');
+    const assetError=await settings.evaluate(async()=>{try{await window.steady.installSpeechAssets();return null;}catch(error){return String(error);}});
+    expect(assetError).toContain('Cartesia');
+    const voice=await settings.evaluate(()=>window.steady.voiceStatus());
+    expect(voice.snapshot?.state).toBe('MUTED');
+    expect(voice.snapshot?.cloudOn).toBe(false);
     const voiceStatus=await page.evaluate(()=>window.steady.status());
     expect(voiceStatus.microphoneEnabled).toBe(false);
-    expect(voiceStatus.speechDiagnostics).toMatchObject({audioBuffers:0,transcriberResults:0,acceptedUtterances:0});
     const received=page.evaluate(()=>new Promise<boolean>(resolve=>{
       const channel=new BroadcastChannel('steady-review-origin-probe');const timer=setTimeout(()=>{channel.close();resolve(false);},2000);
       channel.onmessage=event=>{clearTimeout(timer);channel.close();resolve(event.data==='probe');};
@@ -100,8 +100,10 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     }
     await expect.poll(frameCount,{timeout:10000}).toBeGreaterThan(2);
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).settings?.cameraId),{timeout:5000}).not.toBe('');
+    const autoCapture = settings.getByRole('checkbox',{name:'Auto-capture when I hold still for 1 second (Capture still works manually)',exact:true});
+    await autoCapture.click(); await expect(autoCapture).not.toBeChecked();
     await settings.getByRole('button',{name:'Begin five-position calibration',exact:true}).click();
-    await expect(settings.getByTestId('setup-message')).toContainText('Hold a neutral position',{timeout:5000});
+    await expect(settings.getByTestId('setup-message')).toContainText('Rest your hand',{timeout:5000});
     const positions = [{x:.5,y:.5},{x:.3,y:.5},{x:.8,y:.5},{x:.5,y:.3},{x:.5,y:.8}];
     const steps = ['left','right','up','down'];
     for (let index=0;index<positions.length;index++) {
@@ -119,14 +121,15 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
       if(index<4) await expect(settings.getByText(`Current step: ${steps[index]}`,{exact:true})).toBeVisible({timeout:5000});
       else await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).settings?.calibrations.length),{timeout:5000}).toBe(1);
     }
-    await expect(settings.getByTestId('setup-message')).toContainText('Five-position calibration saved',{timeout:5000});
+    // Saving publishes a new configuration; the live controller may already
+    // display its loaded-calibration message. Assert the durable result below.
     const calibrated = await page.evaluate(()=>window.steady.status());
     expect(calibrated.settings?.calibrations[0]).toMatchObject({gain:1,smoothing:50,neutral:{x:.5,y:.5}});
     expect(calibrated.canvasConfirmed).toBe(false); expect(calibrated.native?.buttonDown).toBe(false); expect(calibrated.native?.state).toBe('PAUSED'); expect(calibrated.nativeClockReady).toBe(true);
     await expect(page.evaluate(()=>window.steady.action('resume'))).rejects.toThrow('Close Settings');
     await settings.getByRole('button',{name:'Recenter neutral',exact:true}).click();
     await expect(settings.getByTestId('setup-message')).toContainText('Capturing a new neutral',{timeout:2000});
-    await expect(settings.getByTestId('setup-message')).toContainText('Recenter saved',{timeout:5000});
+    await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).settings?.calibrations[0]?.neutral),{timeout:5000}).toEqual(positions[4]);
     expect((await page.evaluate(()=>window.steady.status())).native?.buttonDown).toBe(false);
     const closed = settings.waitForEvent('close');
     await page.evaluate(()=>window.steady.closeSettings()); await closed;
@@ -138,7 +141,7 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     // with fake input, then semantic panel routing with no native click-through.
     await reopened.getByRole('button',{name:'Stop camera probe',exact:true}).click();
     const closedAgain=reopened.waitForEvent('close');await page.evaluate(()=>window.steady.closeSettings());await closedAgain;
-    await page.evaluate(()=>window.steady.beginCanvas());
+    await page.evaluate(()=>window.steady.beginLegacyCanvas());
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).native?.state)).toBe('SETUP');
     const sample = async (position:{x:number;y:number}, count=1):Promise<void> => {
       for(let index=0;index<count;index++) {
@@ -164,11 +167,11 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     await page.evaluate(()=>window.steady.action('click'));
     for(const action of ['undo','redo','brush','toggleErase','bigger','smaller'] as const)await page.evaluate(action=>window.steady.action(action),action);
     await page.evaluate(()=>window.steady.action('penDown'));
-    const panelPoint=await app.evaluate(({BrowserWindow})=>{const bounds=BrowserWindow.getAllWindows()[0]!.getBounds();return {x:bounds.x+10,y:bounds.y+10};});
+    const panelPoint=await app.evaluate(({BrowserWindow})=>{const bounds=BrowserWindow.getAllWindows().find(win=>new URL(win.webContents.getURL()).searchParams.get('view')==='panel')!.getBounds();return {x:bounds.x+10,y:bounds.y+10};});
     await sample(panelPoint);current=await page.evaluate(()=>window.steady.status());expect(current.native?.state).toBe('HOVER');expect(current.native?.buttonDown).toBe(false);
     // Background consumes Click. A registered Pause invokes its local dispatcher.
     await page.evaluate(()=>window.steady.action('click'));
-    const pauseRect=await page.getByRole('button',{name:'Pause input',exact:true}).boundingBox();expect(pauseRect).not.toBeNull();
+    const pauseRect=await page.getByRole('button',{name:'Pause tracking',exact:true}).first().boundingBox();expect(pauseRect).not.toBeNull();
     await sample({x:panelPoint.x-10+pauseRect!.x+pauseRect!.width/2,y:panelPoint.y-10+pauseRect!.y+pauseRect!.height/2});
     await page.evaluate(()=>window.steady.action('click'));expect((await page.evaluate(()=>window.steady.status())).native?.state).toBe('PAUSED');
     await sample(inside,18);await page.evaluate(()=>window.steady.action('resume'));await page.evaluate(()=>window.steady.action('penDown'));

@@ -49,49 +49,160 @@ export class SampleGate {
   }
 }
 
+/**
+ * Declared-loss lock only: how long without an accepted matching frame (by result *receipt* time)
+ * before the selected hand must be confirmed again. Input safety is separate and unchanged: the
+ * native watchdog pauses and releases at 250 ms since the last valid capture (plan §3).
+ */
+export const HAND_LOSS_MS = 1000;
+/** A confirm click may arrive via main (pause round trip); the candidate must be this recent on receipt. */
+export const CONFIRM_FRESH_MS = 500;
+/**
+ * Overhead cameras see the back of the hand and MediaPipe's Left/Right label flickers. An off-label run
+ * shorter than this is treated as the selected hand (the 0.12 jump check still applies); longer is rejected.
+ */
+export const LABEL_FLICKER_MS = 300;
+
 /** Conservative continuity only: handedness and proximity never identify a person. */
 export class SelectedHandContinuity {
   selectedHand: HandLabel | null = null;
   confirmationRequired = false;
   private previous: Point | null = null;
-  private lastValid: number | null = null;
-  private candidate: { anchor: Point; timestamp: number } | null = null;
+  private lastValidReceipt: number | null = null;
+  private candidate: { anchor: Point; timestamp: number; receivedAt: number } | null = null;
+  private mismatchSince: number | null = null;
   setSelectedHand(label: HandLabel | null, confirmed = false): void {
     this.selectedHand = label; this.confirmationRequired = label !== null && !confirmed;
-    this.previous = null; this.lastValid = null; this.candidate = null;
+    this.previous = null; this.lastValidReceipt = null; this.candidate = null; this.mismatchSince = null;
   }
   /** Returns true only on the transition to declared loss, including camera stalls. */
   expire(now: number): boolean {
-    if (this.selectedHand !== null && !this.confirmationRequired && this.lastValid !== null && now - this.lastValid >= 250) {
+    if (this.selectedHand !== null && !this.confirmationRequired && this.lastValidReceipt !== null && now - this.lastValidReceipt >= HAND_LOSS_MS) {
       this.confirmationRequired = true; this.previous = null; this.candidate = null; return true;
     }
     return false;
   }
+  /** `timestamp` = capture time, `now` = receipt time of this result. */
   observe(result: AnchorResult, label: HandLabel | null, timestamp: number, now: number): AnchorResult {
     this.expire(now);
     if (!result.valid || !result.anchor) { this.candidate = null; return result; }
     if (!label) { this.candidate = null; return { valid: false, anchor: null, reason: 'missing handedness label' }; }
-    if (this.selectedHand !== null && label !== this.selectedHand) { this.candidate = null; return { valid: false, anchor: null, reason: 'different hand label' }; }
+    if (this.selectedHand !== null && label !== this.selectedHand) {
+      this.mismatchSince ??= now;
+      const flicker = now - this.mismatchSince < LABEL_FLICKER_MS && !this.confirmationRequired && this.previous !== null;
+      if (!flicker) { this.candidate = null; return { valid: false, anchor: null, reason: 'different hand label' }; }
+      label = this.selectedHand;
+    } else this.mismatchSince = null;
     if (this.selectedHand === null) this.selectedHand = label;
-    this.candidate = { anchor: result.anchor, timestamp };
+    this.candidate = { anchor: result.anchor, timestamp, receivedAt: now };
     if (this.confirmationRequired) return { valid: false, anchor: null, reason: 'confirm selected hand' };
     if (this.previous && Math.hypot(result.anchor.x - this.previous.x, result.anchor.y - this.previous.y) > 0.12) return { valid: false, anchor: null, reason: 'hand anchor jump' };
-    this.previous = result.anchor; this.lastValid = timestamp;
+    this.previous = result.anchor; this.lastValidReceipt = now;
     return result;
   }
   confirm(now: number): boolean {
-    if (!this.confirmationRequired || !this.candidate || now < this.candidate.timestamp || now - this.candidate.timestamp >= 250) return false;
-    this.previous = this.candidate.anchor; this.lastValid = this.candidate.timestamp;
+    if (!this.confirmationRequired || !this.candidate || now < this.candidate.receivedAt || now - this.candidate.receivedAt >= CONFIRM_FRESH_MS) return false;
+    // Restart the loss clock from the confirmation itself, so the watchdog cannot re-lock at once.
+    this.previous = this.candidate.anchor; this.lastValidReceipt = now;
     this.confirmationRequired = false; return true;
   }
 }
 
+/** Plain-language reason a frame was rejected (panel hint under the preview). */
+export function rejectionHint(reason: string | null | undefined, mode: Mode): string | null {
+  const subject = mode === 'palm' ? 'hand' : 'face';
+  switch (reason) {
+    case undefined: case null: case 'valid': return null;
+    case 'no subject': return `No ${subject} in view`;
+    case 'multiple subjects': return mode === 'palm' ? 'Two hands in view — show only one' : 'More than one face in view';
+    case 'missing handedness label': case 'invalid landmark': return `Keep your whole ${subject} in the frame`;
+    case 'different hand label': return "That's your other hand";
+    case 'hand anchor jump': return 'Moved too fast — hold steady';
+    case 'confirm selected hand': return 'Hand was lost — show it and press Confirm';
+    default: return reason;
+  }
+}
+
+export interface Orientation { flipX: boolean; flipY: boolean }
+export const DEFAULT_ORIENTATION: Orientation = { flipX: false, flipY: false };
+/** Applies a camera orientation to mirrored display/anchor coordinates (identity by default). */
+export function orientPoint<T extends Landmark>(point: T, orientation: Orientation): T {
+  return { ...point, x: orientation.flipX ? 1 - point.x : point.x, y: orientation.flipY ? 1 - point.y : point.y };
+}
+export type Edge = 'left' | 'right' | 'top' | 'bottom';
+/** Palm anchor indices: wrist + four knuckles (same as extractAnchor). */
+const PALM_POINTS = [0, 5, 9, 13, 17];
+/** Model landmarks → display coordinates (mirrored once, then oriented), matching the preview. */
+export const displayLandmarks = (landmarks: Landmark[], orientation: Orientation): Landmark[] => landmarks.map(point => orientPoint({ x: 1 - point.x, y: point.y }, orientation));
+/**
+ * Which frame edge the tracked points (display coordinates) are about to leave. Warns before
+ * extractAnchor starts rejecting frames for landmarks outside the image.
+ */
+export function edgeProximity(display: Landmark[], mode: Mode, margin = 0.06): Edge | null {
+  const points = (mode === 'palm' ? PALM_POINTS.map(index => display[index]) : display).filter((point): point is Landmark => Boolean(point));
+  if (!points.length) return null;
+  const xs = points.map(point => point.x), ys = points.map(point => point.y);
+  const distances: [Edge, number][] = [['left', Math.min(...xs)], ['right', 1 - Math.max(...xs)], ['top', Math.min(...ys)], ['bottom', 1 - Math.max(...ys)]];
+  const nearest = distances.sort((a, b) => a[1] - b[1])[0]!;
+  return nearest[1] < margin ? nearest[0] : null;
+}
+export function edgeHint(edge: Edge | null, mode: Mode): string | null {
+  if (!edge) return null;
+  const back = { left: 'right', right: 'left', top: 'down', bottom: 'up' }[edge];
+  return `${mode === 'palm' ? 'Hand' : 'Face'} is near the ${edge} edge — move back ${back} a little`;
+}
+
+/** MediaPipe hand skeleton (21 landmarks). */
+export const HAND_CONNECTIONS: readonly [number, number][] = [
+  [0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17],
+];
+/** Display-only landmarks for the preview; never sent to main. Unmirrored model coordinates. */
+export interface PreviewOverlay { mode: Mode; landmarks: Landmark[]; valid: boolean; receivedAt: number; orientation?: Orientation }
+export const OVERLAY_MAX_AGE_MS = 250;
+
+/** Draws over the already-mirrored preview, mirroring x exactly once to match it. */
+export function drawLandmarkOverlay(canvas: HTMLCanvasElement, overlay: PreviewOverlay | null, now: number): void {
+  if (!overlay || !overlay.landmarks.length || now - overlay.receivedAt > OVERLAY_MAX_AGE_MS) return;
+  const context = canvas.getContext('2d');
+  if (!context) return;
+  const w = canvas.width, h = canvas.height, scale = Math.max(1, w / 320);
+  const o = overlay.orientation ?? DEFAULT_ORIENTATION;
+  const at = (point: Landmark): [number, number] => { const [p] = displayLandmarks([point], o); return [p!.x * w, p!.y * h]; };
+  context.save();
+  context.strokeStyle = context.fillStyle = overlay.valid ? '#70B99D' : '#A9B0B0';
+  context.lineWidth = 1.5 * scale;
+  if (overlay.mode === 'palm') {
+    context.beginPath();
+    for (const [a, b] of HAND_CONNECTIONS) {
+      const p = overlay.landmarks[a], q = overlay.landmarks[b];
+      if (!p || !q) continue;
+      context.moveTo(...at(p)); context.lineTo(...at(q));
+    }
+    context.stroke();
+  } else {
+    const shown = overlay.landmarks.map(point => at(point));
+    const xs = shown.map(([x]) => x), ys = shown.map(([, y]) => y);
+    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    const arm = Math.min(x1 - x0, y1 - y0) * 0.22;
+    context.beginPath();
+    for (const [x, y, dx, dy] of [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]] as const) {
+      context.moveTo(x + dx * arm, y); context.lineTo(x, y); context.lineTo(x, y + dy * arm);
+    }
+    context.stroke();
+  }
+  for (const point of overlay.landmarks) { const [x, y] = at(point); context.beginPath(); context.arc(x, y, 2.2 * scale, 0, Math.PI * 2); context.fill(); }
+  context.restore();
+}
+
 /** The preview is flipped once; inference consumes the original unflipped video. */
-export function drawMirroredPreview(canvas: HTMLCanvasElement, video: HTMLVideoElement): void {
+export function drawMirroredPreview(canvas: HTMLCanvasElement, video: HTMLVideoElement, orientation: Orientation = DEFAULT_ORIENTATION): void {
   const context = canvas.getContext('2d');
   if (!context || !video.videoWidth || !video.videoHeight) return;
   if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
   if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
-  context.save(); context.translate(canvas.width, 0); context.scale(-1, 1);
+  // Mirror exactly once (flipX undoes it), and flip vertically only when asked.
+  const mirror = !orientation.flipX;
+  context.save(); context.translate(mirror ? canvas.width : 0, orientation.flipY ? canvas.height : 0); context.scale(mirror ? -1 : 1, orientation.flipY ? -1 : 1);
   context.drawImage(video, 0, 0, canvas.width, canvas.height); context.restore();
 }

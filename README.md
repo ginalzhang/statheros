@@ -1,8 +1,10 @@
-# Steady
+# Steady (Statheros)
+
+**Voice commands:** explicitly enable Voice Commands to use local drawing keywords without a wake word, say “hey cartesia, pen down”, or use ⌘⇧Space push-to-talk. Local keywords and wake detection run on-device (sherpa-onnx); wake/push-to-talk audio streams to Cartesia Ink while the red cloud dot shows. Cloud transcripts without a recognized command can be sent to Claude for interpretation when an Anthropic key is configured. See [docs/voice/README.md](docs/voice/README.md). **UI:** the companion panel follows the Statheros Figma design ([docs/design](docs/design/IMPLEMENTATION.md)).
 
 Steady is a working prototype of a local macOS drawing companion for Krita on Apple Silicon/macOS 26+. It maps camera-based head or palm tracking across the selected display and limits drawing to a configured canvas rectangle. It provides drawing controls through a floating panel and configurable global keys, with five-position calibration, Accessibility-based canvas detection, mouse selection, explicit real-input opt-in, and pause/recovery controls.
 
-Physical-camera and Krita acceptance remain partially unverified. Voice input and speech-asset installation are disabled. Generic shortcut profiles are configuration previews; native execution supports the fixed Krita profile.
+Physical-camera, live voice, and Krita acceptance remain partially unverified. Voice starts with the microphone off; Apple speech-asset installation is unused. Generic shortcut profiles are configuration previews; native execution supports the fixed Krita profile.
 
 ## Development
 
@@ -64,7 +66,7 @@ Settings also offers a bounded real-input probe in the packaged app. Confirm a d
 - Initial automatic detection targets unrotated documents. Use mouse selection for rotated or ambiguous layouts. A viewport rectangle includes its gray workspace; it does not represent the rotated artwork's exact shape.
 - Relaxed desk-facing palm tracking remains unverified; earlier validation used a raised hand.
 - The 10-second warmup and 60-second baseline measure renderer mapping rate and receipt-to-map processing time. Camera inference p95 measures bitmap dispatch to result receipt. These do not establish native-event or perceived smoothing latency.
-- Speech implementation and diagnostics remain in the source, but microphone enable and speech-asset installation are rejected. Live recognition and speech timing are unverified.
+- Local drawing keywords can execute mid-sentence while Voice Commands is enabled. Wake/push-to-talk use Cartesia; optional Claude interpretation uses `ANTHROPIC_API_KEY` or the macOS Keychain. Apple speech assets are unused. Live recognition and speech timing remain unverified. See [voice setup](docs/voice/README.md).
 - No camera frames, recordings, or transcripts are persisted. Retained speech timing diagnostics contain identifiers and counters only.
 
 Historical plans, reviews, operator checklists, and execution evidence are preserved locally in `.archive/plan/`. `.archive/` is ignored by Git and is not included in fresh checkouts. These records describe earlier development milestones; this README describes the current working prototype.

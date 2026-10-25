@@ -115,3 +115,11 @@ describe('persisted calibration schema boundaries', () => {
     expect(isCalibrationV1({ ...value, mode: 'palm', selectedHand: 'Left' })).toBe(true);
   });
 });
+
+test('a failed palm capture names the most common rejection in plain language', () => {
+  const capture = new CalibrationCapture({ cameraId: 'cam', mode: 'palm', generation: 1 }, 0);
+  for (let frame = 0; frame < 50; frame++) capture.add({ generation: 1, frameId: frame, captureTimestamp: frame * 33 + 1, mode: 'palm', valid: false, anchor: null, qualityReason: 'confirm selected hand', selectedHand: 'Left' }, frame * 33 + 2);
+  const result = capture.finish(2000);
+  expect(result.ok).toBe(false);
+  expect(!result.ok && result.reason).toContain('received 0. Most frames: hand was lost — show it and press Confirm.');
+});

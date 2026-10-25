@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TrackingSample } from '../../src/shared/contracts';
-import { drawMirroredPreview, SampleGate, SelectedHandContinuity, type AnchorResult } from '../../src/renderer/tracking';
+import { CONFIRM_FRESH_MS, displayLandmarks, drawLandmarkOverlay, drawMirroredPreview, edgeHint, edgeProximity, HAND_LOSS_MS, LABEL_FLICKER_MS, orientPoint, rejectionHint, SampleGate, SelectedHandContinuity, type AnchorResult } from '../../src/renderer/tracking';
 
 const anchor = (x = 0.5, y = 0.5): AnchorResult => ({ valid: true, anchor: { x, y }, reason: 'valid' });
 const invalid: AnchorResult = { valid: false, anchor: null, reason: 'multiple subjects' };
@@ -12,10 +12,21 @@ describe('selected-hand continuity (synthetic, no identity claim)', () => {
     expect(hand.observe(anchor(), 'Left', 100, 100).valid).toBe(true);
     expect(hand.selectedHand).toBe('Left');
     expect(hand.observe(invalid, null, 110, 110).valid).toBe(false);
-    expect(hand.observe(anchor(), 'Right', 120, 120).reason).toBe('different hand label');
+    // A brief Right flicker (overhead camera) is the selected hand; a sustained Right is rejected.
+    expect(hand.observe(anchor(), 'Right', 120, 120).valid).toBe(true);
+    expect(hand.observe(anchor(), 'Right', 120 + LABEL_FLICKER_MS, 120 + LABEL_FLICKER_MS).reason).toBe('different hand label');
     expect(hand.selectedHand).toBe('Left');
-    expect(hand.observe(anchor(), null, 130, 130).valid).toBe(false);
-    expect(hand.observe(anchor(), 'Left', 140, 140).valid).toBe(true);
+    expect(hand.observe(anchor(), null, 430, 430).valid).toBe(false);
+    expect(hand.observe(anchor(), 'Left', 440, 440).valid).toBe(true);
+  });
+  it('label flicker tolerance still enforces the jump check and confirmation', () => {
+    const hand = new SelectedHandContinuity(); hand.observe(anchor(0.5), 'Left', 0, 0);
+    expect(hand.observe(anchor(0.51), 'Right', 30, 30).valid).toBe(true);
+    expect(hand.observe(anchor(0.8), 'Right', 60, 60).reason).toBe('hand anchor jump');
+    expect(hand.observe(anchor(0.52), 'Left', 90, 90).valid).toBe(true);
+    expect(hand.observe(anchor(0.52), 'Right', 120, 120).valid).toBe(true); // a new short run after the label recovered
+    const saved = new SelectedHandContinuity(); saved.setSelectedHand('Left');
+    expect(saved.observe(anchor(), 'Right', 10, 10).reason).toBe('different hand label'); // no prior valid anchor
   });
   it('rejects jumps exceeding .12 from the preceding valid anchor; invalids do not move that anchor', () => {
     const hand = new SelectedHandContinuity();
@@ -25,20 +36,39 @@ describe('selected-hand continuity (synthetic, no identity claim)', () => {
     expect(hand.observe(anchor(0.35, 0), 'Left', 30, 30).valid).toBe(false);
     expect(hand.observe(anchor(0.13, 0), 'Left', 40, 40).valid).toBe(true);
   });
-  it('declares loss at 250ms without a new frame and requires explicit recent matching confirmation', () => {
+  it(`declares loss ${HAND_LOSS_MS}ms after the last accepted result and requires explicit recent matching confirmation`, () => {
     const hand = new SelectedHandContinuity(); hand.observe(anchor(), 'Left', 100, 100);
-    expect(hand.expire(349.999)).toBe(false); expect(hand.expire(350)).toBe(true);
-    expect(hand.expire(360)).toBe(false); expect(hand.confirm(360)).toBe(false);
-    expect(hand.observe(anchor(0.9), 'Right', 370, 370).valid).toBe(false); expect(hand.confirm(370)).toBe(false);
-    expect(hand.observe(anchor(0.9), 'Left', 380, 380).reason).toBe('confirm selected hand');
-    expect(hand.confirm(630)).toBe(false);
-    hand.observe(anchor(0.9), 'Left', 640, 640); expect(hand.confirm(650)).toBe(true);
-    expect(hand.observe(anchor(0.91), 'Left', 660, 660).valid).toBe(true);
+    expect(hand.expire(100 + HAND_LOSS_MS - 0.001)).toBe(false); expect(hand.expire(100 + HAND_LOSS_MS)).toBe(true);
+    const t = 100 + HAND_LOSS_MS;
+    expect(hand.expire(t + 10)).toBe(false); expect(hand.confirm(t + 10)).toBe(false);
+    expect(hand.observe(anchor(0.9), 'Right', t + 20, t + 20).valid).toBe(false); expect(hand.confirm(t + 20)).toBe(false);
+    expect(hand.observe(anchor(0.9), 'Left', t + 30, t + 30).reason).toBe('confirm selected hand');
+    expect(hand.confirm(t + 30 + CONFIRM_FRESH_MS)).toBe(false);
+    hand.observe(anchor(0.9), 'Left', t + 600, t + 600); expect(hand.confirm(t + 610)).toBe(true);
+    expect(hand.observe(anchor(0.91), 'Left', t + 620, t + 620).valid).toBe(true);
   });
-  it('expires before processing a result that arrives after a gap, and cannot confirm an ambiguous frame', () => {
+  it('expires before processing a result that arrives after a long gap, and cannot confirm an ambiguous frame', () => {
     const hand = new SelectedHandContinuity(); hand.observe(anchor(), 'Left', 100, 100);
-    expect(hand.observe(anchor(), 'Left', 351, 351).reason).toBe('confirm selected hand');
-    hand.observe(invalid, null, 360, 360); expect(hand.confirm(360)).toBe(false);
+    expect(hand.observe(anchor(), 'Left', 100 + HAND_LOSS_MS + 1, 100 + HAND_LOSS_MS + 1).reason).toBe('confirm selected hand');
+    hand.observe(invalid, null, 1200, 1200); expect(hand.confirm(1200)).toBe(false);
+  });
+  it('normal pipeline latency never declares loss (regression: palm calibration got 0 samples)', () => {
+    // 15 fps results, each arriving 200 ms after capture; the watchdog ticks every 10 ms.
+    const hand = new SelectedHandContinuity();
+    let locked = false, valid = 0;
+    for (let receipt = 300; receipt < 5000; receipt += 10) {
+      if (hand.expire(receipt)) locked = true;
+      if (receipt % 70 === 0 && hand.observe(anchor(0.5 + (receipt % 140) / 10000), 'Left', receipt - 200, receipt).valid) valid++;
+    }
+    expect(locked).toBe(false);
+    expect(valid).toBeGreaterThan(60);
+  });
+  it('a confirm ~300 ms after the candidate is accepted and the lock does not return immediately', () => {
+    const hand = new SelectedHandContinuity(); hand.setSelectedHand('Left');
+    hand.observe(anchor(), 'Left', 900, 1000); // capture 900, received 1000
+    expect(hand.confirm(1300)).toBe(true);
+    for (let now = 1300; now < 1300 + HAND_LOSS_MS - 10; now += 10) expect(hand.expire(now)).toBe(false);
+    expect(hand.observe(anchor(0.51), 'Left', 1250, 1350).valid).toBe(true);
   });
   it('saved selections require confirmation and cannot silently choose another label', () => {
     const hand = new SelectedHandContinuity(); hand.setSelectedHand('Right');
@@ -72,5 +102,55 @@ describe('stale inference and preview', () => {
     expect(context.translate).toHaveBeenCalledExactlyOnceWith(640, 0);
     expect(context.drawImage).toHaveBeenCalledExactlyOnceWith(video, 0, 0, 640, 480);
     expect(context.restore).toHaveBeenCalledOnce();
+  });
+});
+
+describe('preview overlay and hints', () => {
+  const canvasWith = () => {
+    const calls: { arc: number[][] } = { arc: [] };
+    const context = { save: vi.fn(), restore: vi.fn(), beginPath: vi.fn(), stroke: vi.fn(), fill: vi.fn(), lineTo: vi.fn(), moveTo: vi.fn(), arc: (x: number, y: number) => calls.arc.push([x, y]), strokeStyle: '', fillStyle: '', lineWidth: 0 };
+    return { canvas: { width: 640, height: 480, getContext: () => context } as unknown as HTMLCanvasElement, calls, context };
+  };
+  it('mirrors landmarks once to match the mirrored preview', () => {
+    const { canvas, calls } = canvasWith();
+    drawLandmarkOverlay(canvas, { mode: 'palm', landmarks: [{ x: 0.2, y: 0.5 }], valid: true, receivedAt: 100 }, 150);
+    expect(calls.arc[0]).toEqual([0.8 * 640, 0.5 * 480]);
+  });
+  it('draws nothing for a stale overlay and greys out rejected frames', () => {
+    const stale = canvasWith();
+    drawLandmarkOverlay(stale.canvas, { mode: 'palm', landmarks: [{ x: 0.2, y: 0.5 }], valid: true, receivedAt: 100 }, 400);
+    expect(stale.calls.arc).toEqual([]);
+    const rejected = canvasWith();
+    drawLandmarkOverlay(rejected.canvas, { mode: 'palm', landmarks: [{ x: 0.2, y: 0.5 }], valid: false, receivedAt: 100 }, 110);
+    expect(rejected.context.fillStyle).toBe('#A9B0B0');
+  });
+  it('explains rejections in plain language', () => {
+    expect(rejectionHint('multiple subjects', 'palm')).toBe('Two hands in view — show only one');
+    expect(rejectionHint('confirm selected hand', 'palm')).toContain('press Confirm');
+    expect(rejectionHint('no subject', 'head')).toBe('No face in view');
+    expect(rejectionHint('valid', 'palm')).toBeNull();
+  });
+});
+
+describe('edges and orientation', () => {
+  const hand = (x: number, y: number) => Array.from({ length: 21 }, () => ({ x, y }));
+  it('warns before the palm anchor points leave the frame (display coordinates)', () => {
+    expect(edgeProximity(displayLandmarks(hand(0.5, 0.97), { flipX: false, flipY: false }), 'palm')).toBe('bottom');
+    expect(edgeProximity(displayLandmarks(hand(0.97, 0.5), { flipX: false, flipY: false }), 'palm')).toBe('left'); // mirrored once
+    expect(edgeProximity(displayLandmarks(hand(0.5, 0.97), { flipX: false, flipY: true }), 'palm')).toBe('top');
+    expect(edgeProximity(displayLandmarks(hand(0.5, 0.5), { flipX: false, flipY: false }), 'palm')).toBeNull();
+    expect(edgeHint('bottom', 'palm')).toBe('Hand is near the bottom edge — move back up a little');
+  });
+  it('orientation flips anchors and is the identity by default', () => {
+    expect(orientPoint({ x: 0.2, y: 0.3 }, { flipX: false, flipY: false })).toEqual({ x: 0.2, y: 0.3 });
+    expect(orientPoint({ x: 0.2, y: 0.25 }, { flipX: true, flipY: true })).toEqual({ x: 0.8, y: 0.75 });
+  });
+  it('preview flips match the orientation (mirror exactly once by default)', () => {
+    const context = { save: vi.fn(), translate: vi.fn(), scale: vi.fn(), drawImage: vi.fn(), restore: vi.fn() };
+    const canvas = { width: 0, height: 0, getContext: () => context } as unknown as HTMLCanvasElement;
+    const video = { videoWidth: 640, videoHeight: 480 } as HTMLVideoElement;
+    drawMirroredPreview(canvas, video, { flipX: true, flipY: true });
+    expect(context.scale).toHaveBeenCalledExactlyOnceWith(1, -1);
+    expect(context.translate).toHaveBeenCalledExactlyOnceWith(0, 480);
   });
 });
