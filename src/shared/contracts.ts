@@ -3,7 +3,7 @@ export const PROTOCOL_VERSION = 1 as const;
 export const MAX_MESSAGE_BYTES = 16 * 1024;
 export const ACTIONS = ['penDown', 'penUp', 'penToggle', 'click', 'undo', 'redo', 'brush', 'toggleErase', 'bigger', 'smaller', 'pause', 'resume', 'recenter', 'markCorner', 'microphoneOff'] as const;
 export type ActionID = typeof ACTIONS[number];
-export const LOCAL_ACTIONS = ['openSettings', 'togglePanel', 'quit', 'beginCanvas', 'selectCanvas', 'reviewWorkspace', 'beginLegacyCanvas', 'cancelCanvas', 'recover', 'confirmHand'] as const;
+export const LOCAL_ACTIONS = ['openSettings', 'togglePanel', 'quit', 'setCanvas', 'beginCanvas', 'selectCanvas', 'reviewWorkspace', 'beginLegacyCanvas', 'cancelCanvas', 'recover', 'confirmHand'] as const;
 export type LocalActionID = ActionID | typeof LOCAL_ACTIONS[number];
 export type ShortcutActionID = 'undo' | 'redo' | 'brush' | 'toggleErase' | 'bigger' | 'smaller';
 export interface ShortcutProfile { name: string; targetBundleId: string; shortcuts: Record<ShortcutActionID, string> }

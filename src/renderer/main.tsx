@@ -186,9 +186,9 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
         <div className="row"><span>Canvas</span>
           {status.canvasSetup?.active && status.canvasSetup.mode === 'legacy'
             ? <span className="row-actions"><button className="link" data-action="markCorner" onClick={() => action('markCorner')}>Mark corner</button><button className="link" data-action="cancelCanvas" onClick={() => action('cancelCanvas')}>Cancel</button></span>
-            : <span className="row-actions"><span className={`value ${status.canvasConfirmed ? 'good' : 'muted'}`}>{status.canvasConfirmed ? 'Set' : 'Not set'}</span><button className="link" data-action="beginCanvas" onClick={() => action('beginCanvas')}>Set canvas</button></span>}
+            : <span className="row-actions"><span className={`value ${status.canvasConfirmed ? 'good' : 'muted'}`}>{status.canvasConfirmed ? 'Set' : 'Not set'}</span><button className="link" data-action="setCanvas" disabled={status.canvasSetup?.active && status.canvasSetup.mode === 'detect'} onClick={() => action('setCanvas')}>Set canvas</button></span>}
         </div>
-        {status.canvasSetup?.active && <p className="secondary" role="status">{status.canvasSetup.message}</p>}
+        {status.canvasSetup && <p className="secondary" role="status">{status.canvasSetup.message}</p>}
         <button className="link" data-action="openSettings" onClick={() => action('openSettings')}>Recalibrate Tracking</button>
         {feedback && <p role="alert" className="error">{feedback}</p>}
       </section>
@@ -476,7 +476,7 @@ function CommandSettings({ status, run }: { status: ProbeStatus; run: (work: () 
     <h2 id="commands-heading">Commands and global bindings</h2>
     <p>F8 toggles the pen, or marks corners during advanced tracked setup. F9 pauses. Detect canvas and Select with mouse also have configurable bindings. Other bindings begin unassigned. macOS may require Fn with function keys; configure keys or an external switch here. Conflicts remain visible and require a different binding.</p>
     {status.bindingConflicts?.length ? <p role="alert" className="error">Global binding conflicts: {status.bindingConflicts.join('; ')}</p> : null}
-    <div className="binding-grid">{ALL_CONTROLS.map(id => <label key={id}>{actionLabels.find(([action]) => action === id)?.[1] ?? ({openSettings:'Open settings',togglePanel:'Collapse / expand',quit:'Quit',beginCanvas:'Detect canvas',selectCanvas:'Select with mouse',reviewWorkspace:'Review suggested workspace',beginLegacyCanvas:'Tracked corner setup',cancelCanvas:'Cancel canvas',recover:'Recover helper',confirmHand:'Confirm hand'} as Record<string,string>)[id]}<input aria-label={`Binding ${id}`} value={bindings[id] ?? ''} placeholder="Unassigned" onChange={event => setBindings(current => ({ ...current, [id]: event.target.value }))} /></label>)}</div>
+    <div className="binding-grid">{ALL_CONTROLS.map(id => <label key={id}>{actionLabels.find(([action]) => action === id)?.[1] ?? ({openSettings:'Open settings',togglePanel:'Collapse / expand',quit:'Quit',setCanvas:'Set canvas',beginCanvas:'Detect canvas',selectCanvas:'Select with mouse',reviewWorkspace:'Review suggested workspace',beginLegacyCanvas:'Tracked corner setup',cancelCanvas:'Cancel canvas',recover:'Recover helper',confirmHand:'Confirm hand'} as Record<string,string>)[id]}<input aria-label={`Binding ${id}`} value={bindings[id] ?? ''} placeholder="Unassigned" onChange={event => setBindings(current => ({ ...current, [id]: event.target.value }))} /></label>)}</div>
     <button onClick={() => run(() => window.steady.saveBindings(bindings))}>Save global bindings</button>
     <h3>Target shortcut profile</h3>
     <label>Profile<select value={generic ? 'generic' : 'krita'} onChange={event => setProfile(event.target.value === 'krita' ? kritaProfile() : { ...kritaProfile(), name: 'Generic', targetBundleId: 'org.example.editor' })}><option value="krita">Krita 5.3.4 defaults · manual verification required</option><option value="generic">Generic · unverified configuration preview</option></select></label>

@@ -17,6 +17,7 @@ it('rejects duplicate/unknown bindings and validates generic profile configurati
   expect(() => validateBindings({pause:'F8',penToggle:'f8'})).toThrow('Duplicate');
   expect(() => validateBindings({shell:'Command+Q'})).toThrow();
   expect(validateBindings({pause:'F9',undo:''})).toEqual({pause:'F9'});
+  expect(validateBindings({setCanvas:'F7',beginCanvas:'F6'})).toEqual({setCanvas:'F7',beginCanvas:'F6'});
   expect(validateProfile({...kritaProfile(),name:'Generic — unverified',targetBundleId:'org.example.editor'}).targetBundleId).toBe('org.example.editor');
   expect(() => validateProfile({...kritaProfile(),shortcuts:{undo:'X'}})).toThrow();
 });
