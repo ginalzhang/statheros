@@ -123,6 +123,9 @@ function App(): React.JSX.Element {
     if (!isSettings && id === 'confirmHand') { try { probeRef.current?.confirmHand(); } catch (cause) { setError(String(cause)); } }
   }), [isSettings]);
 
+  // Resume confirms the selected hand (only if exactly that hand is in view); no extra pause.
+  useEffect(() => window.steady.onConfirmHand(() => { if (!isSettings && probeRef.current) probeRef.current.confirmHand(); }), [isSettings]);
+
   useEffect(() => window.steady.onRecenter(() => {
     if (!isSettings) { try { setupRef.current?.beginRecenter(); } catch (cause) { setError(String(cause)); } }
   }), [isSettings]);
@@ -187,6 +190,7 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
       {!status.collapsed && <button className="icon" data-action="quit" onClick={() => action('quit')} aria-label="Quit Steady" title="Quit"><Icon name="close" size={16} /></button>}
     </header>
     <div className="panel-content" hidden={status.collapsed}>
+      {(!native || native === 'PAUSED' || native === 'SETUP' || native === 'FAULT') && <ReadyChecklist status={status} probe={probe} palm={palm} action={action} />}
       <section className="panel-section" aria-labelledby="tracking-title">
         <h2 id="tracking-title">Tracking</h2>
         <div className="row"><span>{palm ? 'Hand Tracking' : 'Head Tracking'}</span>
@@ -267,6 +271,43 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
       <p className="hint">F8 {status.canvasSetup?.mode === 'legacy' && status.canvasSetup.active ? 'marks a corner' : 'toggles the pen'} · F9 pauses · {status.realInput ? 'real input' : 'fake input'}</p>
     </div>
   </main>;
+}
+
+/**
+ * Every Resume prerequisite at once, in an order where no step undoes an earlier one (real input restarts
+ * the helper, so it comes before the canvas; the canvas is also remembered while Krita looks the same).
+ */
+function ReadyChecklist({ status, probe, palm, action }: { status: ProbeStatus; probe: ProbeReport; palm: boolean; action: (id: LocalActionID) => void }): React.JSX.Element {
+  const [error, setError] = useState<string | null>(null);
+  const native = status.native;
+  const calibrated = Boolean(status.settings?.calibrations.some(c => c.cameraId === status.settings?.cameraId && c.mode === status.settings?.mode));
+  const items: { label: string; ok: boolean; hint?: string; fix?: React.ReactNode }[] = [
+    { label: 'Helper running', ok: Boolean(native && status.nativeClockReady && !status.nativeFault), fix: <button className="link" data-action="recover" onClick={() => action('recover')}>Recover</button> },
+    { label: 'Camera on', ok: probe.running, fix: <button className="link" data-action="openSettings" onClick={() => action('openSettings')}>Start in Settings</button> },
+    { label: 'Calibrated', ok: calibrated, fix: <button className="link" data-action="openSettings" onClick={() => action('openSettings')}>Calibrate</button> },
+    { label: 'Settings closed', ok: !status.settingsOpen, hint: 'Close the Settings window' },
+    { label: 'Krita open and in front', ok: Boolean(status.targetPid) && native?.foregroundTarget === 'org.krita', hint: 'Click your Krita window' },
+    { label: 'Accessibility allowed', ok: Boolean(native?.permissions.accessibility), hint: 'System Settings › Privacy & Security › Accessibility › Steady' },
+    { label: 'Real mouse control', ok: status.realInput, fix: <button className="link" onClick={() => { setError(null); void window.steady.setRealInput(true).catch(cause => setError(String(cause))); }}>Turn on</button>, hint: 'Only in a document you can draw on' },
+    { label: 'Canvas set', ok: Boolean(status.canvasConfirmed), fix: status.canvasSetup?.workspaceSuggestion
+      ? <button className="link" data-action="reviewWorkspace" onClick={() => action('reviewWorkspace')}>Review &amp; use</button>
+      : <button className="link" data-action="beginCanvas" onClick={() => action('beginCanvas')}>Detect</button> },
+    ...(palm ? [{ label: 'Hand in view', ok: probe.running && !probe.rejection, hint: probe.confirmationRequired ? 'Resume confirms your hand' : rejectionHint(probe.rejection, 'palm') ?? undefined }] : []),
+  ];
+  const blocking = items.filter(item => !item.ok && !(item.label === 'Hand in view' && probe.confirmationRequired));
+  const first = items.findIndex(item => !item.ok);
+  return <section className="panel-section ready" aria-labelledby="ready-title">
+    <h2 id="ready-title">Before you draw</h2>
+    <ul className="checklist">
+      {items.map((item, index) => <li key={item.label} className={item.ok ? 'ok' : index === first ? 'next' : 'todo'}>
+        <span className="mark" aria-hidden="true">{item.ok ? '✓' : index === first ? '→' : '·'}</span>
+        <span className="what">{item.label}{!item.ok && item.hint && <small>{item.hint}</small>}</span>
+        {!item.ok && item.fix}
+      </li>)}
+    </ul>
+    <button className="primary resume-all" data-action="resume" disabled={blocking.length > 0} onClick={() => action('resume')}>{blocking.length ? `${blocking.length} step${blocking.length > 1 ? 's' : ''} left` : 'Resume tracking'}</button>
+    {error && <p className="error" role="alert">{error}</p>}
+  </section>;
 }
 
 /** Floating-toolbar order (Figma §2): select · pen · eraser | brush · smaller · bigger | undo · redo. */

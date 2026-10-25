@@ -141,3 +141,17 @@ export function freshWorkspaceSuggestion(observation: CanvasObservation | null, 
   return Boolean(observation?.workspaceSuggestion && observation.generation === generation && observation.targetPid === targetPid &&
     Number.isFinite(receivedAt) && Number.isFinite(now) && now >= receivedAt && now - receivedAt < 1500);
 }
+
+/**
+ * Reuse the last accepted canvas only when Krita looks exactly as it did: same display, same window frame,
+ * same (hashed) document, and the same observed workspace/viewport when one was recorded. Process and
+ * window ids are ignored so a Krita or Steady restart can still match. Anything missing or different: no.
+ */
+export function rememberedCanvasMatches(remembered: import('../shared/settings').RememberedCanvas | undefined, observation: CanvasObservation, displayId: number | undefined): boolean {
+  if (!remembered || displayId === undefined || remembered.displayId !== displayId) return false;
+  if (!observation.windowBounds || !sameCanvasRect(remembered.windowBounds, observation.windowBounds)) return false;
+  if (!observation.windowToken || observation.windowToken !== remembered.windowToken) return false;
+  if (remembered.workspace && !sameCanvasRect(remembered.workspace, observation.workspaceSuggestion)) return false;
+  if (remembered.viewport && !sameCanvasRect(remembered.viewport, observation.rect)) return false;
+  return true;
+}

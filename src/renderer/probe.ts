@@ -55,6 +55,7 @@ export class CameraProbe {
     this.configuredHand = label; this.continuity.setSelectedHand(label, confirmed);
   }
   confirmHand(): boolean {
+    if (!this.continuity.confirmationRequired) return true;
     const confirmed = this.continuity.confirm(performance.now());
     this.emit(confirmed ? 'Selected hand confirmed; remains paused' : 'Show exactly the selected hand before confirming');
     return confirmed;

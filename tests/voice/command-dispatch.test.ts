@@ -29,8 +29,8 @@ it('local and interpreted Resume retain the shared calibration and canvas prereq
     await nativeAction();
   };
   const interpret = vi.fn(async () => 'resume' as const);
-  await expect(dispatchVoiceCommand(command('resume'), enqueue, interpret)).rejects.toThrow('Confirm the canvas');
-  await expect(dispatchVoiceCommand(command('keep going', 'ptt'), enqueue, interpret)).rejects.toThrow('Confirm the canvas');
+  await expect(dispatchVoiceCommand(command('resume'), enqueue, interpret)).rejects.toThrow('Set the canvas first');
+  await expect(dispatchVoiceCommand(command('keep going', 'ptt'), enqueue, interpret)).rejects.toThrow('Set the canvas first');
   expect(nativeAction).not.toHaveBeenCalled();
   status.canvas = { x: 0, y: 0, width: 300, height: 200 }; status.canvasConfirmed = true;
   status.settingsOpen = true;

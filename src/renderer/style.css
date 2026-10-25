@@ -169,3 +169,15 @@ html.canvas-window, .canvas-window body, .canvas-window #root { width: 100%; hei
 .panel-section .settings-actions button, .advanced-canvas button, .canvas-diagnostics button, .canvas-selector-controls button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .segmented button.armed { background: transparent; outline: 2px dashed var(--selected); outline-offset: -3px; font-weight: 500; }
 .pen-gesture h3 { font-size: 14px; margin: 16px 0 4px; }
+
+/* "Before you draw" checklist. */
+.ready .checklist { list-style: none; margin: 0 0 10px; padding: 0; }
+.ready .checklist li { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; font-size: 12.5px; }
+.ready .checklist .mark { width: 14px; flex-shrink: 0; text-align: center; color: var(--muted); }
+.ready .checklist li.ok .mark { color: var(--mint); }
+.ready .checklist li.next .mark, .ready .checklist li.next .what { color: var(--text); font-weight: 600; }
+.ready .checklist li.ok .what { color: var(--muted); }
+.ready .checklist .what { flex: 1; min-width: 0; }
+.ready .checklist small { display: block; font-weight: 400; color: var(--muted); font-size: 11.5px; }
+.ready .resume-all { width: 100%; min-height: 34px; border: 0; border-radius: 8px; background: var(--salmon); font-size: 13px; }
+.ready .resume-all:disabled { background: var(--segment); opacity: 1; color: var(--muted); }

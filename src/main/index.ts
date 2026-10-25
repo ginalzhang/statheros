@@ -9,7 +9,7 @@ import { emptySpeechDiagnostics, isSpeechDiagnosticError, SpeechDiagnosticRecord
 import { LiveProbe } from './live-probe';
 import { PANEL_COLLAPSED_HEIGHT, PANEL_HEIGHT, PANEL_WIDTH, canvasSelectionControlsFrame, panelPosition, preferredDisplay, sameCanvasSelectionDisplay } from './panel';
 import { CanvasCapture, containsPoint, fitWorkspaceSuggestion, intersects, validateCanvas } from './canvas';
-import { CanvasSetup, canvasIdentity, freshCanvasObservation, freshWorkspaceSuggestion, routeCanvasObservation, sameCanvasRect } from './canvas-setup';
+import { CanvasSetup, canvasIdentity, freshCanvasObservation, freshWorkspaceSuggestion, rememberedCanvasMatches, routeCanvasObservation, sameCanvasRect } from './canvas-setup';
 import { CanvasDiagnostics } from './canvas-diagnostics';
 import { GlobalBindingInstaller, defaultBindings, kritaProfile, isLocalAction, hitPanel, resolveBinding, validateBindings, validateProfile } from './commands';
 import { freshPointer, mappedSampleAllowed, readyForControl } from './input-gates';
@@ -229,7 +229,7 @@ async function confirmCanvas(value: unknown): Promise<void> {
       await configureControl();
       if (!canvas) throw new Error(canvasSetup.state.message);
     });
-    status.canvasConfirmed = true; status.fault = null;
+    status.canvasConfirmed = true; status.fault = null; rememberCanvas(latestCanvasObservation);
     trackingEvidence('canvas-confirmed', { canvas, source: 'manual', realInput }); publish();
     void showCanvasOutline();
   } catch (error) { invalidateCanvas('Canvas confirmation failed. Select with mouse again.'); await pause(canvasSetup.state.message); throw error; }
@@ -246,6 +246,30 @@ async function showCanvasOutline(): Promise<void> {
   setTimeout(() => { if (canvasOutline === outline) canvasOutline = null; if (!outline.isDestroyed()) outline.destroy(); }, 1200);
 }
 
+/** Persist the accepted canvas with the Krita state it belongs to (hashed document identity, no titles). */
+function rememberCanvas(observation: CanvasObservation | null): void {
+  if (!canvas || !observation?.windowBounds || !observation.windowToken || status.selectedDisplayId === undefined) return;
+  savedSettings = { ...savedSettings, rememberedCanvas: { displayId: status.selectedDisplayId, canvas: { ...canvas }, windowBounds: { ...observation.windowBounds }, windowToken: observation.windowToken,
+    workspace: observation.workspaceSuggestion ? { ...observation.workspaceSuggestion } : null, viewport: observation.rect ? { ...observation.rect } : null } };
+  try { settingsStore.save(savedSettings); status.settings = savedSettings; } catch { /* remembering is best-effort */ }
+}
+/** Krita looks exactly as when the canvas was accepted: reapply it, still paused (Resume stays explicit). */
+async function restoreRememberedCanvas(observation: CanvasObservation, identity: string | null): Promise<void> {
+  const remembered = savedSettings.rememberedCanvas!;
+  const display = selectedDisplay(), bounds = panel?.getBounds();
+  let restored: Rect;
+  try { restored = validateCanvas(remembered.canvas, { x: remembered.canvas.x + remembered.canvas.width, y: remembered.canvas.y + remembered.canvas.height }, display.bounds, bounds ? [bounds] : []); }
+  catch { return; } // e.g. the panel now overlaps it: fall back to normal setup
+  await pause('Restoring your last canvas; input stays paused.');
+  closeCanvasWindows(); canvas = restored; status.canvasConfirmed = false; generation++;
+  try {
+    await configureControl(); if (!canvas) return;
+    canvasSetup.preference = 'manual';
+    canvasSetup.confirmed('manual', identity); canvasSetup.bindObservation(observation);
+    status.canvasConfirmed = true; status.fault = 'Canvas restored (Krita looks the same as last time). Resume when ready.';
+    trackingEvidence('canvas-restored', { canvas, realInput }); publish(); void showCanvasOutline();
+  } catch { invalidateCanvas('Could not restore the last canvas. Detect or select it again.'); publish(); }
+}
 async function observeCanvas(observation: CanvasObservation, native: NativeSupervisor): Promise<void> {
   if (supervisor !== native || !status.nativeClockReady || status.nativeFault) return;
   let nativeNow: number;
@@ -253,6 +277,8 @@ async function observeCanvas(observation: CanvasObservation, native: NativeSuper
   if (!freshCanvasObservation(observation, generation, status.targetPid, nativeNow, latestCanvasObservation?.observedAt ?? -Infinity, native.clock.uncertainty)) return;
   latestCanvasObservation = observation; latestCanvasReceivedAt = performance.now(); canvasSetup.observation(observation); canvasDiagnostics.observe(observation);
   const identity = canvasIdentity(observation);
+  if (!canvas && !canvasSetup.state.active && !selectionOverlay && !status.settingsOpen && !panelGeometryPending && fixedKritaProfile() && status.native?.foregroundTarget === 'org.krita'
+    && rememberedCanvasMatches(savedSettings.rememberedCanvas, observation, status.selectedDisplayId)) { await restoreRememberedCanvas(observation, identity); return; }
   if (canvasSetup.preference !== 'automatic') {
     const changes = canvasSetup.geometryChanges(observation);
     if ((canvas || canvasSetup.state.active) && changes.length > 0) {
@@ -299,7 +325,7 @@ async function observeCanvas(observation: CanvasObservation, native: NativeSuper
   closeCanvasWindows(); canvas = detected; status.canvasConfirmed = false; generation++;
   try {
     await configureControl(); if (!canvas) return;
-    canvasSetup.confirmed(observation.kind, identity); canvasSetup.bindObservation(observation); status.canvasConfirmed = true; status.fault = null; publish(); void showCanvasOutline();
+    canvasSetup.confirmed(observation.kind, identity); canvasSetup.bindObservation(observation); status.canvasConfirmed = true; status.fault = null; rememberCanvas(observation); publish(); void showCanvasOutline();
   } catch (error) { invalidateCanvas('Detected bounds could not be configured. Select with mouse or recover the helper.'); throw error; }
 }
 function installBindings(): void {
@@ -423,7 +449,7 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
         if (!canvas) throw new Error(canvasSetup.state.message);
         canvasSetup.confirmed('manual', latestCanvasObservation ? canvasIdentity(latestCanvasObservation) : null);
         if (latestCanvasObservation) canvasSetup.bindObservation(latestCanvasObservation);
-        status.canvasConfirmed = true;
+        status.canvasConfirmed = true; rememberCanvas(latestCanvasObservation);
         trackingEvidence('canvas-confirmed', { canvas, realInput });
       }
       publish(); return null;
@@ -434,6 +460,9 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
       const reason = readyForControl({ ...status, generation }, true);
       if (reason) throw new Error(reason);
       if (nativeConfiguredTarget !== status.targetPid) throw new Error('Krita restarted. Recover the native helper and reconfirm canvas.');
+      // Resume is the explicit confirmation of the selected hand after a loss (the panel confirms only if
+      // exactly that hand is in view), so users don't loop through a separate Confirm step that pauses again.
+      if (savedSettings.mode === 'palm') panel?.webContents.send('steady:confirm-hand');
       break;
     }
     case 'click': {
@@ -479,8 +508,27 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
     }
   }
   if (actionId === 'penUp') { pen.release(); status.penArmed = false; }
+  if (actionId === 'resume') return resumeWhenSteady(eventId);
   const ack = await supervisor.request('action', { generation, eventId, actionId: actionId as ActionID });
   status.fault = null; publish(); return ack;
+}
+/**
+ * Native Resume needs 500 ms of consecutive valid tracking. Right after the hand is (re)confirmed that is
+ * not yet true, so wait up to ~1.5 s for it instead of failing; any other refusal is reported at once.
+ */
+async function resumeWhenSteady(eventId: string): Promise<Ack | null> {
+  const deadline = performance.now() + 1500;
+  for (;;) {
+    try {
+      const ack = await supervisor!.request('action', { generation, eventId: eventId || randomUUID(), actionId: 'resume' });
+      status.fault = null; publish(); return ack;
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'prerequisites' || performance.now() >= deadline) throw error;
+      status.fault = 'Hold your hand steady in view…'; publish();
+      await new Promise(resolve => setTimeout(resolve, 150));
+      eventId = randomUUID();
+    }
+  }
 }
 async function collapsePanel(collapsed: boolean): Promise<void> {
   status.collapsed = collapsed; panel?.setSize(PANEL_WIDTH, collapsed ? PANEL_COLLAPSED_HEIGHT : PANEL_HEIGHT, false); buttons = [];
