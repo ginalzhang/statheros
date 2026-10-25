@@ -22,8 +22,9 @@ import { SettingsStore } from './settings';
 import { defaultSettings, withCalibration } from '../shared/settings';
 import { isCalibrationV1 } from '../renderer/engine';
 import { ElectronVoice } from './voice/electron-voice';
-import { findSteadyCommands, VOICE_LABELS } from './voice/steady-commands';
-import { anthropicKey, createIntentClient, interpretIntent, type IntentClient } from './voice/intent';
+import { parseSteadyCommand } from './voice/steady-commands';
+import { anthropicKey, createIntentClient, interpretPlan, type IntentClient } from './voice/intent';
+import { describePlan, resolvePlan, withoutFirstRun, type PlanStep } from './voice/plan';
 import { explainRejection } from './rejections';
 import type { CommandEvent } from './voice/types';
 import type { VoiceCaptureReport } from '../shared/voice';
@@ -207,26 +208,41 @@ async function microphone(enabled: boolean): Promise<void> {
   voice.setMicrophone(enabled);
 }
 let intentClient: IntentClient | null | undefined;
-async function interpretWithClaude(text: string): Promise<ActionID | null> {
+/** null when Claude is unavailable (no key, network error); [] when it heard no request. */
+async function interpretWithClaude(text: string): Promise<PlanStep[] | null> {
   if (intentClient === undefined) { const key = anthropicKey(); intentClient = key ? createIntentClient(key) : null; }
   if (!intentClient) return null;
-  try { return await interpretIntent(intentClient, text); }
+  try { return await interpretPlan(intentClient, text); }
   catch (error) { console.warn('Claude intent failed:', error instanceof Error ? error.message : error); return null; }
 }
-/** <<COMMAND_ENTRYPOINT>> for voice: the shared dispatcher, resolving after the native ack. */
+// Krita needs a beat between repeated shortcuts to apply each one.
+const REPEAT_GAP_MS = 60;
+/** <<COMMAND_ENTRYPOINT>> for voice: runs the spoken plan through the shared dispatcher, resolving after the native acks. */
 async function executeVoiceCommand(command: CommandEvent): Promise<string | null> {
   if (command.kind === 'dictation') throw new Error("Dictation isn't available in Steady");
-  let actions = findSteadyCommands(command.text);
-  if (actions.length === 0 && command.source !== 'local') {
-    // No command word: let Claude map what was meant ("get rid of that line") onto the same fixed actions.
-    const meant = await interpretWithClaude(command.text);
-    if (meant) actions = [meant];
+  let { steps } = await resolvePlan(command.text, interpretWithClaude);
+  const ran = command.alreadyRan === undefined ? null : parseSteadyCommand(command.alreadyRan);
+  if (ran) {
+    // The on-device keyword already ran this once; run only what the full sentence adds ("… three times" → two more).
+    const rest = withoutFirstRun(steps, ran);
+    if (!rest?.length) return describePlan([{ action: ran, times: 1 }]);
+    steps = rest;
   }
-  if (actions.length === 0) throw new Error(`No command heard in “${command.text.slice(0, 40)}”`);
-  if (actions.length > 1) throw new Error(`Heard more than one command (${actions.map(id => VOICE_LABELS[id].toLowerCase()).join(', ')}): say one at a time`);
-  const action = actions[0]!;
-  await enqueueAction(action);
-  return VOICE_LABELS[action];
+  if (!steps.length) throw new Error(`No command heard in “${command.text.slice(0, 40)}”`);
+  const done: PlanStep[] = [];
+  for (const step of steps) {
+    for (let i = 0; i < step.times; i++) {
+      if (done.length || i) await new Promise(resolve => setTimeout(resolve, REPEAT_GAP_MS));
+      try { await enqueueAction(step.action); }
+      catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        if (i) done.push({ action: step.action, times: i });
+        throw new Error(done.length ? `${describePlan(done)}, then stopped: ${reason}` : reason);
+      }
+    }
+    done.push(step);
+  }
+  return describePlan(done);
 }
 function initialPanelPosition(): {x:number;y:number} {
   const display = screen.getAllDisplays().find(d=>d.internal) ?? screen.getPrimaryDisplay();

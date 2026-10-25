@@ -19,6 +19,8 @@ export const UNSTAMPED_TIMERS: readonly TimerName[] = ['wake_gate_tail', 'gate_c
 export interface CommandEvent {
   cmdId: number; text: string; kind: 'command' | 'dictation'; source: 'wake' | 'ptt' | 'local'; confidence: Confidence;
   utteranceGen: number; sessionId: number; tWake: number | null; tSpeechEnd: number | null; tFinal: number;
+  /** The on-device keyword that already ran once for this utterance; `text` is the full cloud transcript around it. */
+  alreadyRan?: string;
 }
 
 export type VoiceEvent =
@@ -95,6 +97,10 @@ export interface VoiceContext {
   timers: Map<TimerName, LiveTimer>; timerSeq: number;
   sttDisabled: boolean; sttDisabledMessage: string | null; deviceSwapUntil: number; mutedReason: 'user' | 'permission' | null; lastAttentionTs: number;
   lastError: string | null; tSpeechEnd: number | null; lastLocalCommand: { text: string; ts: number } | null;
+  /** Keyword that ran locally while the cloud transcribes the rest of the utterance ("undo … three times"). */
+  followUp: string | null;
+  /** Audio up to here went to the cloud for a follow-up; a keyword spotted in it is already in that transcript. */
+  cloudHeardUntil: number;
 }
 
 export function createContext(options: { abortSupported: boolean; sttDisabled?: boolean; sttDisabledMessage?: string | null }): VoiceContext {
@@ -105,7 +111,7 @@ export function createContext(options: { abortSupported: boolean; sttDisabled?: 
     cmdCounter: 0, inFlightCmd: null, abortSupported: options.abortSupported, bargeIn: false,
     wakeGatedUntil: -Infinity, livePlaybacks: new Set(), gatingPlayId: null, timers: new Map(), timerSeq: 0,
     sttDisabled: options.sttDisabled ?? false, sttDisabledMessage: options.sttDisabledMessage ?? null, deviceSwapUntil: -Infinity,
-    mutedReason: null, lastAttentionTs: -Infinity, lastError: null, tSpeechEnd: null, lastLocalCommand: null,
+    mutedReason: null, lastAttentionTs: -Infinity, lastError: null, tSpeechEnd: null, lastLocalCommand: null, followUp: null, cloudHeardUntil: -Infinity,
   };
 }
 
