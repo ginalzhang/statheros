@@ -7,6 +7,8 @@ export interface VoiceConfig {
     phrase: string; keywordsFile: string; refractoryS: number; prerollMs: number; playbackGateTailMs: number;
     gateCapS: { earcon: number; tts: number }; skipAfterDeviceSwapMs: number; localStopKeyword: boolean;
     remnantAliases: string[]; requireAttention: boolean; attentionWindowMs: number;
+    /** After an on-device command keyword runs, stream that utterance to Cartesia to hear counts and follow-ons ("undo … three times"). */
+    localFollowUp: boolean;
   };
   vad: { threshold: number; hangoverMs: number };
   stt: {
@@ -38,6 +40,8 @@ export const defaultVoiceConfig = (): VoiceConfig => ({
     prerollMs: 1500, playbackGateTailMs: 200,
     gateCapS: { earcon: 1, tts: 30 }, skipAfterDeviceSwapMs: 500, localStopKeyword: true, remnantAliases: [],
     requireAttention: false, attentionWindowMs: 1500,
+    // Off: command words stay on-device and instant. Counts ("undo three times") work after the wake phrase or push-to-talk.
+    localFollowUp: false,
   },
   vad: { threshold: 0.5, hangoverMs: 600 },
   stt: {

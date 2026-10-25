@@ -16,3 +16,12 @@ it('discards commands during an in-flight configuration immediately, while safet
   await deliverCommand(queue, () => generation, 'undo', async () => { effects.push('undo'); });
   expect(effects).toEqual(['release', 'undo']);
 });
+it('queues Krita shortcuts behind an in-flight configuration instead of discarding them', async () => {
+  const queue = new ConfigurationQueue(); let generation = 1; const effects: string[] = [];
+  let finish!: () => void;
+  const configuration = queue.run(async () => { await new Promise<void>(resolve => { finish = resolve; }); generation++; effects.push('configured'); });
+  await Promise.resolve();
+  const undo = deliverCommand(queue, () => generation, 'undo', async () => { effects.push('undo'); });
+  finish(); await configuration; await undo;
+  expect(effects).toEqual(['configured', 'undo']);
+});

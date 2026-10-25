@@ -671,17 +671,18 @@ describe('capture failures', () => {
 });
 
 describe('local command keywords (no wake phrase)', () => {
-  it('dispatches straight from PASSIVE without opening the cloud', () => {
-    const h = new Harness();
-    h.send({ type: 'LocalCommand', text: 'undo', ts: 1 });
-    expect(h.dispatched()).toEqual(['undo']);
-    expect(h.find('Dispatch')[0]?.command).toMatchObject({ source: 'local', confidence: 'high', tWake: null });
-    expect(h.find('OpenStt')).toEqual([]);
-    expect(h.find('SetCloudGate').some(action => action.on)).toBe(false);
-    expect(h.state).toBe('EXECUTING');
+  it('dispatches straight from PASSIVE; without follow-up or a key it never opens the cloud', () => {
+    for (const h of [new Harness({ config: c => { c.wake.localFollowUp = false; } }), new Harness({ sttDisabled: true })]) {
+      h.send({ type: 'LocalCommand', text: 'undo', ts: 1 });
+      expect(h.dispatched()).toEqual(['undo']);
+      expect(h.find('Dispatch')[0]?.command).toMatchObject({ source: 'local', confidence: 'high', tWake: null });
+      expect(h.find('OpenStt')).toEqual([]);
+      expect(h.find('SetCloudGate').some(action => action.on)).toBe(false);
+      expect(h.state).toBe('EXECUTING');
+    }
   });
   it('ignores repeats within the refractory window, but not a different command', () => {
-    const h = new Harness();
+    const h = new Harness({ config: c => { c.wake.localFollowUp = false; } });
     h.send({ type: 'LocalCommand', text: 'toggle erase', ts: 1 });
     h.send({ type: 'LocalCommand', text: 'toggle erase', ts: 1.4 });
     h.send({ type: 'LocalCommand', text: 'brush', ts: 1.5 });
@@ -700,5 +701,75 @@ describe('local command keywords (no wake phrase)', () => {
     gated.ctx.wakeGatedUntil = 2;
     gated.send({ type: 'LocalCommand', text: 'undo', ts: 1.5 });
     expect(gated.dispatched()).toEqual([]);
+  });
+});
+
+describe('follow-up after a local keyword ("undo … three times")', () => {
+  function keyword(h: Harness, text = 'undo', ts = 1): void {
+    h.now = ts; h.vad(true);
+    h.send({ type: 'LocalCommand', text, ts });
+  }
+  it('runs the keyword at once, then silently transcribes the utterance from the pre-roll', () => {
+    const h = new Harness({ config: c => { c.wake.localFollowUp = true; } });
+    keyword(h);
+    expect(h.dispatched()).toEqual(['undo']);
+    expect(h.state).toBe('WAKING');
+    expect(h.find('PlayEarcon')).toEqual([]);
+    h.advance(1.2); h.stt({ type: 'SttConnected' });
+    expect(h.state).toBe('LISTENING');
+    expect(h.find('StartForwarding').at(-1)?.fromTs).toBeCloseTo(1 - h.config.wake.prerollMs / 1000);
+    expect(h.gate()).toBe(true);
+    h.vad(false); h.stt({ type: 'SttFinal', text: 'undo three times' });
+    expect(h.dispatched()).toEqual(['undo', 'undo three times']);
+    expect(h.find('Dispatch')[1]?.command).toMatchObject({ source: 'local', alreadyRan: 'undo' });
+    expect(h.gate()).toBe(false);
+  });
+  it('queues behind the keyword command instead of aborting it', () => {
+    const h = new Harness({ abortSupported: true, config: c => { c.wake.localFollowUp = true; } });
+    keyword(h);
+    h.advance(1.2); h.stt({ type: 'SttConnected' }); h.vad(false);
+    h.stt({ type: 'SttFinal', text: 'undo twice' });
+    expect(h.find('AbortCommand')).toEqual([]);
+    expect(h.toasts()).not.toContain('Will run after the current command');
+  });
+  it('shows the keyword result while still listening', () => {
+    const h = new Harness({ config: c => { c.wake.localFollowUp = true; } });
+    keyword(h);
+    const cmdId = h.find('Dispatch')[0]!.command.cmdId;
+    h.send({ type: 'CommandDone', cmdId, resultText: 'Undone' });
+    expect(h.toasts()).toEqual(['Undone']);
+    expect(h.state).toBe('WAKING');
+  });
+  it('drops a failed follow-up quietly: the keyword already ran', () => {
+    const h = new Harness({ config: c => { c.wake.localFollowUp = true; } });
+    keyword(h);
+    h.advance(10);
+    expect(h.state).toBe('PASSIVE');
+    expect(h.toasts()).toEqual([]);
+    expect(h.ctx.followUp).toBeNull();
+  });
+  it('a keyword spotted in audio the cloud already heard is not run twice', () => {
+    const h = new Harness({ config: c => { c.wake.localFollowUp = true; } });
+    keyword(h, 'undo', 1);
+    h.advance(1.2); h.stt({ type: 'SttConnected' });
+    h.now = 2.5; h.vad(false); h.stt({ type: 'SttFinal', text: 'undo undo' });
+    const cmdId = h.find('Dispatch')[1]!.command.cmdId;
+    h.send({ type: 'CommandDone', cmdId, resultText: 'Undone' });
+    // The spotter reports the second "undo" late, after the transcript already counted it.
+    h.now = 3; h.send({ type: 'LocalCommand', text: 'undo', ts: 2.3 });
+    expect(h.dispatched()).toEqual(['undo', 'undo undo']);
+    // A new utterance afterwards still runs.
+    h.advance(4); h.send({ type: 'LocalCommand', text: 'undo', ts: 4 });
+    expect(h.dispatched()).toEqual(['undo', 'undo undo', 'undo']);
+    // Its pre-roll starts where the last transcript's audio ended, not 1.5 s back.
+    h.advance(4.2); h.stt({ type: 'SttConnected' });
+    expect(h.find('StartForwarding').at(-1)?.fromTs).toBe(2.5);
+  });
+  it('is off by default: the keyword runs and nothing opens a cloud session', () => {
+    const h = new Harness();
+    keyword(h);
+    expect(h.dispatched()).toEqual(['undo']);
+    expect(h.find('OpenStt')).toEqual([]);
+    expect(h.state).toBe('EXECUTING');
   });
 });

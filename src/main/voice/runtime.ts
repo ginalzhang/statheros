@@ -268,8 +268,16 @@ export class VoiceRuntime {
     this.latencies.push(latency);
     this.host.log('info', { utterance: latency, confidence: command.confidence });
     this.executor = this.executor.then(async () => {
-      try { this.post({ type: 'CommandDone', cmdId: command.cmdId, resultText: await this.host.executeCommand(command) }); }
-      catch (error) { this.post({ type: 'CommandFailed', cmdId: command.cmdId, message: error instanceof Error ? error.message : String(error) }); }
+      // Outcomes are logged so a command that was heard but didn't land can be told apart; quoted transcripts are redacted.
+      try {
+        const resultText = await this.host.executeCommand(command);
+        this.host.log('info', { cmdId: command.cmdId, source: command.source, ok: true, result: resultText });
+        this.post({ type: 'CommandDone', cmdId: command.cmdId, resultText });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.host.log('info', { cmdId: command.cmdId, source: command.source, ok: false, result: message.replace(/“[^”]*”/g, '“…”').slice(0, 160) });
+        this.post({ type: 'CommandFailed', cmdId: command.cmdId, message });
+      }
     });
   }
 }

@@ -28,7 +28,7 @@ it('local and interpreted Resume retain the shared calibration and canvas prereq
     if (reason) throw new Error(reason);
     await nativeAction();
   };
-  const interpret = vi.fn(async () => 'resume' as const);
+  const interpret = vi.fn(async () => [{ action: 'resume' as const, times: 1 }]);
   await expect(dispatchVoiceCommand(command('resume'), enqueue, interpret)).rejects.toThrow('Confirm the canvas');
   await expect(dispatchVoiceCommand(command('keep going', 'ptt'), enqueue, interpret)).rejects.toThrow('Confirm the canvas');
   expect(nativeAction).not.toHaveBeenCalled();
@@ -54,12 +54,34 @@ it('voice cannot queue drawing through a canvas configuration change; Pause stil
   expect(interpret).not.toHaveBeenCalled();
 });
 
-it('does not interpret local misses, multiple commands, or retry rejected actions', async () => {
+it('does not interpret bare local keywords or retry rejected actions', async () => {
   const enqueue = vi.fn(async () => { throw new Error('Finish or cancel mouse selection'); });
-  const interpret = vi.fn(async () => 'undo' as const);
+  const interpret = vi.fn(async () => [{ action: 'undo' as const, times: 1 }]);
   await expect(dispatchVoiceCommand(command('keep going'), enqueue, interpret)).rejects.toThrow('No command heard');
-  await expect(dispatchVoiceCommand(command('undo and redo', 'wake'), enqueue, interpret)).rejects.toThrow('more than one');
-  await expect(dispatchVoiceCommand(command('undo'), enqueue, interpret)).rejects.toThrow('Finish or cancel mouse selection');
+  await expect(dispatchVoiceCommand(command('undo three times', 'wake'), enqueue, interpret)).rejects.toThrow('Finish or cancel mouse selection');
   expect(enqueue).toHaveBeenCalledTimes(1);
   expect(interpret).not.toHaveBeenCalled();
+});
+
+it('runs counts and several commands in order, and reports where a sequence stopped', async () => {
+  const effects: string[] = [];
+  const interpret = vi.fn(async () => null);
+  await expect(dispatchVoiceCommand(command('undo twice then brush', 'wake'), async action => { effects.push(action); }, interpret)).resolves.toBe('Undone ×2 · Brush');
+  expect(effects).toEqual(['undo', 'undo', 'brush']);
+  let calls = 0;
+  const failThird = async () => { if (++calls === 3) throw new Error('Click into your Krita document first'); };
+  await expect(dispatchVoiceCommand(command('undo 5 times', 'ptt'), failThird, interpret)).rejects.toThrow('Undone ×2, then stopped: Click into your Krita document first');
+});
+
+it('a follow-up transcript runs only what the on-device keyword did not, and asks Claude for fuzzy wording', async () => {
+  const effects: string[] = [];
+  const enqueue = async (action: string) => { effects.push(action); };
+  const followUp = (text: string): CommandEvent => ({ ...command(text), alreadyRan: 'undo' });
+  await expect(dispatchVoiceCommand(followUp('undo three times'), enqueue, vi.fn(async () => null))).resolves.toBe('Undone ×2');
+  await expect(dispatchVoiceCommand(followUp('undo'), enqueue, vi.fn(async () => null))).resolves.toBe('Undone');
+  await expect(dispatchVoiceCommand(followUp('you do that'), enqueue, vi.fn(async () => [{ action: 'redo' as const, times: 1 }]))).resolves.toBe('Undone');
+  const interpret = vi.fn(async () => [{ action: 'undo' as const, times: 4 }]);
+  await expect(dispatchVoiceCommand(followUp('undo, get rid of those lines'), enqueue, interpret)).resolves.toBe('Undone ×3');
+  expect(interpret).toHaveBeenCalledWith('undo, get rid of those lines');
+  expect(effects).toEqual(['undo', 'undo', 'undo', 'undo', 'undo']);
 });

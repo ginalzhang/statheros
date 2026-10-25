@@ -118,7 +118,7 @@ class Step {
     if (ctx.state !== next) {
       for (const name of STATE_TIMERS) this.cancelTimer(name);
       if (next === 'PASSIVE' || next === 'MUTED' || next === 'ERROR') {
-        ctx.gen++;
+        ctx.gen++; ctx.followUp = null;
         for (const name of UTTERANCE_TIMERS) this.cancelTimer(name);
       }
     }
@@ -130,7 +130,11 @@ class Step {
       this.setTimer('error_clear', this.c.timers.errorClearS);
     }
   }
-  private error(message: string): void { this.enter('ERROR', message); }
+  private error(message: string): void {
+    // The keyword's action already ran; a failed follow-up listen is not worth an error.
+    if (this.ctx.followUp !== null && message !== KEY_REJECTED) { this.log('info', { followUp: 'dropped', reason: message }); return this.enter('PASSIVE'); }
+    this.enter('ERROR', message);
+  }
 
   /** OpenStt assigns the session, bumps gen and performs the utterance reset (§4.5). */
   private openStt(kind: Endpoint): void {
@@ -143,15 +147,18 @@ class Step {
   }
   /** Gate invariant: AbortStt and SendClose always imply SetCloudGate(false), StopForwarding first. */
   private abortStt(): void {
+    this.markCloudHeard();
     this.emit({ type: 'SetCloudGate', on: false }); this.emit({ type: 'StopForwarding' }); this.emit({ type: 'AbortStt' });
     this.ctx.sessionId = null;
   }
   private abortIfOpen(): void { if (this.sessionOpen()) this.abortStt(); }
   private sendClose(): void {
+    this.markCloudHeard();
     this.emit({ type: 'SetCloudGate', on: false }); this.emit({ type: 'StopForwarding' }); this.emit({ type: 'SendClose' });
     this.ctx.closeSent = true;
   }
-  private gateOff(): void { this.emit({ type: 'SetCloudGate', on: false }); this.emit({ type: 'StopForwarding' }); }
+  private gateOff(): void { this.markCloudHeard(); this.emit({ type: 'SetCloudGate', on: false }); this.emit({ type: 'StopForwarding' }); }
+  private markCloudHeard(): void { if (this.ctx.followUp !== null) this.ctx.cloudHeardUntil = this.now; }
 
   // ───────────────────────── abort path (§4.5) ─────────────────────────
   /** Returns whether an AbortCommand was actually issued. Never changes state. */
@@ -216,7 +223,7 @@ class Step {
     if (result.kind === 'drop') return this.dropped(result.reason);
     if (confidence === 'low') {
       const mode = this.c.dispatchLowConfidence;
-      const dispatch = mode === 'always' || (mode === 'ptt_only' && ctx.source === 'ptt');
+      const dispatch = mode === 'always' || (mode === 'ptt_only' && ctx.source === 'ptt') || ctx.followUp !== null;
       if (!dispatch) {
         this.toast(`Heard '${result.text}' — try again with '${this.c.wake.phrase}'`);
         if (!ctx.closeSent) this.sendClose();
@@ -259,12 +266,14 @@ class Step {
   private dispatchCommand(text: string, kind: 'command' | 'dictation', confidence: Confidence): void {
     const ctx = this.ctx;
     this.emit({ type: 'ShowTranscript', text, final: true });
-    if (ctx.inFlightCmd !== null) this.abortPath(null, 'Will run after the current command');
+    const alreadyRan = ctx.followUp; ctx.followUp = null;
+    // A follow-up continues the keyword's command (often still running); it queues behind it, never aborts it.
+    if (ctx.inFlightCmd !== null && alreadyRan === null) this.abortPath(null, 'Will run after the current command');
     const cmdId = ++ctx.cmdCounter;
     ctx.inFlightCmd = cmdId;
     this.emit({ type: 'Dispatch', command: {
       cmdId, text, kind, source: ctx.source ?? 'ptt', confidence, utteranceGen: ctx.gen, sessionId: ctx.sessionId ?? 0,
-      tWake: ctx.source === 'wake' ? ctx.detectionTs : null, tSpeechEnd: ctx.tSpeechEnd, tFinal: this.now,
+      tWake: ctx.source === 'wake' ? ctx.detectionTs : null, tSpeechEnd: ctx.tSpeechEnd, tFinal: this.now, ...(alreadyRan !== null ? { alreadyRan } : {}),
     } });
     this.setTimer('command', this.c.timers.commandS, cmdId);
     this.cancelTimer('watchdog');
@@ -281,12 +290,27 @@ class Step {
     if (ctx.state === 'MUTED' || ctx.state === 'DISABLED') return;
     if (SESSION_STATES.includes(ctx.state)) return this.log('debug', { localCommand: 'ignored during a cloud session' });
     if (ts <= ctx.wakeGatedUntil || ts < ctx.deviceSwapUntil) return this.log('info', { localCommand: 'gated' });
+    if (ts <= ctx.cloudHeardUntil) return this.log('info', { localCommand: 'in the follow-up transcript' });
     const last = ctx.lastLocalCommand;
     if (last && last.text === text && ts - last.ts < this.c.wake.refractoryS) return this.log('info', { localCommand: 'refractory' });
     ctx.lastLocalCommand = { text, ts };
     ctx.source = 'local'; ctx.detectionTs = null; ctx.tSpeechEnd = null;
     this.log('info', { localCommand: text });
     this.dispatchCommand(text, 'command', 'high');
+    if (this.c.wake.localFollowUp && !ctx.sttDisabled) this.listenForRest(text, ts);
+  }
+  /**
+   * The keyword ran at once; now let Cartesia transcribe the whole utterance (from the pre-roll, so it includes the
+   * keyword) to catch counts and follow-ons: "undo … three times" runs two more. No earcon: it isn't a new turn.
+   */
+  private listenForRest(text: string, ts: number): void {
+    const ctx = this.ctx;
+    ctx.detectionTs = ts;
+    this.enter('WAKING');
+    this.openStt(this.c.stt.wakeEndpoint);
+    ctx.followUp = text;
+    this.setTimer('watchdog', this.c.timers.watchdogS);
+    this.setTimer('connect', connectBackstopSeconds(this.c));
   }
 
   // ───────────────────────── wake (§5.2) ─────────────────────────
@@ -417,7 +441,7 @@ class Step {
       return;
     }
     const previousSource = ctx.source;
-    ctx.source = 'ptt'; ctx.pttMode = mode;
+    ctx.source = 'ptt'; ctx.pttMode = mode; ctx.followUp = null;
     this.enter('PTT_ACTIVE');
     this.openStt('manual');
     if (options.fromTap) ctx.bargeIn = true;
@@ -495,7 +519,9 @@ class Step {
       // WAKING is provably cloud-silent: forwarding starts only after the handshake (§11.1).
       this.enter('LISTENING');
       this.emit({ type: 'SetCloudGate', on: true });
-      this.emit({ type: 'StartForwarding', fromTs: ctx.detectionTs === null ? null : ctx.detectionTs - this.c.wake.prerollMs / 1000 });
+      // A follow-up's pre-roll never re-sends audio an earlier follow-up already transcribed (it would count twice).
+      const preroll = ctx.detectionTs === null ? null : ctx.detectionTs - this.c.wake.prerollMs / 1000;
+      this.emit({ type: 'StartForwarding', fromTs: preroll !== null && ctx.followUp !== null ? Math.max(preroll, ctx.cloudHeardUntil) : preroll });
       this.setTimer('max_utterance', this.c.timers.maxUtteranceS);
       if (!ctx.vadActive) this.setTimer('no_speech', this.c.timers.noSpeechS);
     } else if (ctx.state === 'PTT_ACTIVE') {

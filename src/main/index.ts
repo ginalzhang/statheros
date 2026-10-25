@@ -26,7 +26,8 @@ import { isCalibrationV1 } from '../renderer/engine';
 import { STROKE_PRESETS } from '../renderer/stroke-presets';
 import { ElectronVoice } from './voice/electron-voice';
 import { dispatchVoiceCommand } from './voice/command-dispatch';
-import { anthropicKey, createIntentClient, interpretIntent, type IntentClient } from './voice/intent';
+import { anthropicKey, createIntentClient, interpretPlan, type IntentClient } from './voice/intent';
+import type { PlanStep } from './voice/plan';
 import { explainRejection } from './rejections';
 import type { CommandEvent } from './voice/types';
 import type { VoiceCaptureReport } from '../shared/voice';
@@ -475,13 +476,14 @@ async function microphone(enabled: boolean): Promise<void> {
   voice.setMicrophone(enabled);
 }
 let intentClient: IntentClient | null | undefined;
-async function interpretWithClaude(text: string): Promise<ActionID | null> {
+/** null when Claude is unavailable (no key, network error); [] when it heard no request. */
+async function interpretWithClaude(text: string): Promise<PlanStep[] | null> {
   if (intentClient === undefined) { const key = anthropicKey(); intentClient = key ? createIntentClient(key) : null; }
   if (!intentClient) return null;
-  try { return await interpretIntent(intentClient, text); }
+  try { return await interpretPlan(intentClient, text); }
   catch (error) { console.warn('Claude intent failed:', error instanceof Error ? error.message : error); return null; }
 }
-/** <<COMMAND_ENTRYPOINT>> for voice: the shared dispatcher, resolving after the native ack. */
+/** <<COMMAND_ENTRYPOINT>> for voice: runs the spoken plan through the shared dispatcher, resolving after the native acks. */
 async function executeVoiceCommand(command: CommandEvent): Promise<string | null> {
   return dispatchVoiceCommand(command, enqueueAction, interpretWithClaude);
 }
