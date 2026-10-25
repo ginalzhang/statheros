@@ -10,7 +10,7 @@ import { BunnyMark } from './logo';
 import { Icon, type IconName } from './icons';
 import { activePreset, gainFromPercent, sensitivityPercent, STROKE_PRESETS } from './stroke-presets';
 import { edgeHint, rejectionHint } from './tracking';
-import { orientationFor } from '../shared/settings';
+import { orientationFor, penGestureFor, PEN_GESTURE_DEFAULT_THRESHOLD } from '../shared/settings';
 import { CanvasOutline, CanvasOverlay } from './canvas-overlay';
 
 const initialStatus: ProbeStatus = { native: null, displays: [], fault: null, collapsed: false, settingsOpen: false, generation: 0, realInput: false, microphoneEnabled: false };
@@ -61,6 +61,7 @@ function App(): React.JSX.Element {
         }
       }, sample => controller.sample(sample), () => { void window.steady.action('pause').catch(cause => setError(String(cause))); });
       probeRef.current = camera; camera.preview(previewRef.current);
+      camera.onPenGesture = state => window.steady.penGesture(state, statusRef.current.generation);
       const execute = (operation: () => void): void => { try { operation(); } catch (cause) { setError(String(cause)); channel.postMessage({ type: 'error', message: String(cause) }); } };
       channel.onmessage = event => {
         const message = event.data;
@@ -83,6 +84,14 @@ function App(): React.JSX.Element {
         if (message?.type === 'confirmHand') void window.steady.localAction('confirmHand').catch(cause => setError(String(cause)));
         if (message?.type === 'baseline') execute(() => controller.startBaseline());
         if (message?.type === 'auto-capture' && typeof message.enabled === 'boolean') controller.setAutoCapture(message.enabled);
+        if (message?.type === 'measure-rest') {
+          const settings = statusRef.current.settings, cameraId = settings?.cameraId ?? '';
+          const current = penGestureFor(settings, cameraId);
+          void camera.measureRest()
+            .then(restSize => window.steady.savePenGesture({ cameraId, enabled: current?.enabled ?? false, restSize, threshold: current?.threshold ?? PEN_GESTURE_DEFAULT_THRESHOLD }))
+            .then(() => channel.postMessage({ type: 'rest-measured' }))
+            .catch(cause => { setError(String(cause)); channel.postMessage({ type: 'error', message: String(cause) }); });
+        }
         if (message?.type === 'tuning') execute(() => {
           const c = controller.state.calibration;
           if (c) void window.steady.saveCalibration({ ...c, gain: message.gain, smoothing: message.smoothing }).catch(cause => setError(String(cause)));
@@ -106,11 +115,16 @@ function App(): React.JSX.Element {
     setupRef.current?.update(status.settings, status.displays.find(d => d.id === status.selectedDisplayId), status.generation);
     probeRef.current?.preview(previewRef.current);
     probeRef.current?.setOrientation(orientationFor(status.settings, status.settings?.cameraId ?? ''));
+    const gesture = penGestureFor(status.settings, status.settings?.cameraId ?? '');
+    probeRef.current?.setPenGesture(gesture && status.settings?.mode === 'palm' ? gesture : null);
   }, [isSettings, status]);
 
   useEffect(() => window.steady.onLocalAction(id => {
     if (!isSettings && id === 'confirmHand') { try { probeRef.current?.confirmHand(); } catch (cause) { setError(String(cause)); } }
   }), [isSettings]);
+
+  // Resume confirms the selected hand (only if exactly that hand is in view); no extra pause.
+  useEffect(() => window.steady.onConfirmHand(() => { if (!isSettings && probeRef.current) probeRef.current.confirmHand(); }), [isSettings]);
 
   useEffect(() => window.steady.onRecenter(() => {
     if (!isSettings) { try { setupRef.current?.beginRecenter(); } catch (cause) { setError(String(cause)); } }
@@ -176,6 +190,7 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
       {!status.collapsed && <button className="icon" data-action="quit" onClick={() => action('quit')} aria-label="Quit Steady" title="Quit"><Icon name="close" size={16} /></button>}
     </header>
     <div className="panel-content" hidden={status.collapsed}>
+      {(!native || native === 'PAUSED' || native === 'SETUP' || native === 'FAULT') && <ReadyChecklist status={status} probe={probe} palm={palm} action={action} />}
       <section className="panel-section" aria-labelledby="tracking-title">
         <h2 id="tracking-title">Tracking</h2>
         <div className="row"><span>{palm ? 'Hand Tracking' : 'Head Tracking'}</span>
@@ -206,8 +221,10 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
         <p className="label">Drawing State</p>
         <div className="segmented" role="group" aria-label="Drawing state">
           <button data-action="penUp" aria-pressed={!penDown} onClick={() => action('penUp')}>Pen Up</button>
-          <button data-action="penDown" aria-pressed={penDown} onClick={() => action('penDown')}>Pen Down</button>
+          <button data-action="penDown" aria-pressed={penDown} className={!penDown && status.penArmed ? 'armed' : undefined} onClick={() => action('penDown')}>{!penDown && status.penArmed ? 'Pen Down · armed' : 'Pen Down'}</button>
         </div>
+        {!penDown && status.penArmed && <p className="secondary" role="status">Armed: the pen goes down when your hand moves into the canvas.</p>}
+        {palm && penGestureFor(status.settings, status.settings?.cameraId ?? '')?.enabled && <p className="secondary">Rest hand = pen down · lift hand = pen up</p>}
       </section>
       <section className="panel-section" aria-labelledby="stroke-title">
         <h2 id="stroke-title">Stroke Assistance</h2>
@@ -256,6 +273,43 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
   </main>;
 }
 
+/**
+ * Every Resume prerequisite at once, in an order where no step undoes an earlier one (real input restarts
+ * the helper, so it comes before the canvas; the canvas is also remembered while Krita looks the same).
+ */
+function ReadyChecklist({ status, probe, palm, action }: { status: ProbeStatus; probe: ProbeReport; palm: boolean; action: (id: LocalActionID) => void }): React.JSX.Element {
+  const [error, setError] = useState<string | null>(null);
+  const native = status.native;
+  const calibrated = Boolean(status.settings?.calibrations.some(c => c.cameraId === status.settings?.cameraId && c.mode === status.settings?.mode));
+  const items: { label: string; ok: boolean; hint?: string; fix?: React.ReactNode }[] = [
+    { label: 'Helper running', ok: Boolean(native && status.nativeClockReady && !status.nativeFault), fix: <button className="link" data-action="recover" onClick={() => action('recover')}>Recover</button> },
+    { label: 'Camera on', ok: probe.running, fix: <button className="link" data-action="openSettings" onClick={() => action('openSettings')}>Start in Settings</button> },
+    { label: 'Calibrated', ok: calibrated, fix: <button className="link" data-action="openSettings" onClick={() => action('openSettings')}>Calibrate</button> },
+    { label: 'Settings closed', ok: !status.settingsOpen, hint: 'Close the Settings window' },
+    { label: 'Krita open and in front', ok: Boolean(status.targetPid) && native?.foregroundTarget === 'org.krita', hint: 'Click your Krita window' },
+    { label: 'Accessibility allowed', ok: Boolean(native?.permissions.accessibility), hint: 'System Settings › Privacy & Security › Accessibility › Steady' },
+    { label: 'Real mouse control', ok: status.realInput, fix: <button className="link" onClick={() => { setError(null); void window.steady.setRealInput(true).catch(cause => setError(String(cause))); }}>Turn on</button>, hint: 'Only in a document you can draw on' },
+    { label: 'Canvas set', ok: Boolean(status.canvasConfirmed), fix: status.canvasSetup?.workspaceSuggestion
+      ? <button className="link" data-action="reviewWorkspace" onClick={() => action('reviewWorkspace')}>Review &amp; use</button>
+      : <button className="link" data-action="beginCanvas" onClick={() => action('beginCanvas')}>Detect</button> },
+    ...(palm ? [{ label: 'Hand in view', ok: probe.running && !probe.rejection, hint: probe.confirmationRequired ? 'Resume confirms your hand' : rejectionHint(probe.rejection, 'palm') ?? undefined }] : []),
+  ];
+  const blocking = items.filter(item => !item.ok && !(item.label === 'Hand in view' && probe.confirmationRequired));
+  const first = items.findIndex(item => !item.ok);
+  return <section className="panel-section ready" aria-labelledby="ready-title">
+    <h2 id="ready-title">Before you draw</h2>
+    <ul className="checklist">
+      {items.map((item, index) => <li key={item.label} className={item.ok ? 'ok' : index === first ? 'next' : 'todo'}>
+        <span className="mark" aria-hidden="true">{item.ok ? '✓' : index === first ? '→' : '·'}</span>
+        <span className="what">{item.label}{!item.ok && item.hint && <small>{item.hint}</small>}</span>
+        {!item.ok && item.fix}
+      </li>)}
+    </ul>
+    <button className="primary resume-all" data-action="resume" disabled={blocking.length > 0} onClick={() => action('resume')}>{blocking.length ? `${blocking.length} step${blocking.length > 1 ? 's' : ''} left` : 'Resume tracking'}</button>
+    {error && <p className="error" role="alert">{error}</p>}
+  </section>;
+}
+
 /** Floating-toolbar order (Figma §2): select · pen · eraser | brush · smaller · bigger | undo · redo. */
 const toolbar: ([ActionID, string, IconName] | '|')[] = [['click', 'Click', 'cursor'], ['penToggle', 'Pen toggle', 'penDown'], ['toggleErase', 'Toggle erase', 'eraser'], '|', ['brush', 'Brush', 'brush'], ['smaller', 'Smaller brush', 'smaller'], ['bigger', 'Bigger brush', 'bigger'], '|', ['undo', 'Undo', 'undo'], ['redo', 'Redo', 'redo']];
 
@@ -294,6 +348,28 @@ function CalibrationGuideView({ setup, probe, mode, status, run }: { setup: Setu
     <p>{setup.active ? 'Capturing — keep holding…' : !guide ? 'Show your hand to the camera.' : guide.farEnough ? `Far enough — hold still${guide.auto ? ` (${Math.min(1, guide.steadyMs / 1000).toFixed(1)} / 1.0 s)` : ', then press Capture'}` : guide.step === 'neutral' ? 'Show your hand and rest it in a comfortable middle position.' : `${stepLabel(guide.step)}: keep going a little — a short move is enough`}</p>
     {edge && <p className="error">{edge}</p>}
     {guide?.wrongWay && <WrongWay step={guide.step} status={status} run={run} />}
+  </div>;
+}
+
+/** Opt-in rest/lift pen gesture (Palm mode, overhead camera): rest = pen down, lift = pen up. */
+function PenGestureSettings({ status, probe, mode, run, send }: { status: ProbeStatus; probe: ProbeReport; mode: Mode; run: (work: () => Promise<void>) => void; send: (type: string, extra?: Record<string, unknown>) => void }): React.JSX.Element | null {
+  if (mode !== 'palm') return null;
+  const cameraId = status.settings?.cameraId ?? '';
+  const setting = penGestureFor(status.settings, cameraId);
+  const save = (patch: { enabled?: boolean; threshold?: number }): void => { if (setting) run(() => window.steady.savePenGesture({ ...setting, ...patch })); };
+  const lifted = probe.lift == null ? '—' : `${Math.round(probe.lift * 100)} %`;
+  return <div className="pen-gesture">
+    <h3>Pen gesture</h3>
+    <p>Rest your hand on the desk to put the pen down; lift it toward the camera to lift the pen. The pen only presses inside the canvas, and after Resume you lift and rest once to start. Pen Down, F8 and voice keep working.</p>
+    <div className="settings-actions">
+      <button disabled={!probe.running || !cameraId} onClick={() => send('measure-rest')}>{setting ? 'Re-measure resting hand' : 'Measure resting hand'}</button>
+      {setting && <button onClick={() => run(() => window.steady.savePenGesture({ cameraId, remove: true }))}>Remove</button>}
+    </div>
+    <label className="confirmation"><input type="checkbox" disabled={!setting} checked={Boolean(setting?.enabled)} onChange={event => save({ enabled: event.target.checked })} />Rest = pen down, lift = pen up{setting ? '' : ' (measure your resting hand first)'}</label>
+    {setting && <>
+      <label>Lift amount<input type="range" min={10} max={50} step={1} value={Math.round(setting.threshold * 100)} onChange={event => save({ threshold: Number(event.target.value) / 100 })} aria-valuetext={`${Math.round(setting.threshold * 100)} percent larger`} /></label>
+      <p role="status">Palm looks {lifted} larger than at rest · lifts above {Math.round(setting.threshold * 100)} % · {probe.penGesture === 'lift' ? 'lifted (pen up)' : probe.penGesture === 'rest' ? 'resting (pen down)' : 'waiting for your hand'}</p>
+    </>}
   </div>;
 }
 
@@ -351,6 +427,7 @@ function Settings({ status, probe, setup, feedback, run, channel, voice }: { sta
       <label>Camera<select value={cameraId} onChange={event => { stop(); setCameraId(event.target.value); run(() => window.steady.selectCamera(event.target.value, mode)); }}><option value="">Default camera</option>{cameras.map((camera, index) => <option key={camera.deviceId || index} value={camera.deviceId}>{camera.label || `Camera ${index + 1}`}</option>)}</select></label>
       <div className="settings-actions"><button onClick={start}>Start camera probe</button><button onClick={stop}>Stop camera probe</button><button onClick={refresh}>Refresh cameras</button></div>
       <Orientation status={status} run={run} />
+      <PenGestureSettings status={status} probe={probe} mode={mode} run={run} send={send} />
       <p role="status">{probe.message} · {probe.frames} frames{probe.delegate ? ` · ${probe.delegate}` : ''}</p>
       <p>Actual: {probe.width ?? '—'}×{probe.height ?? '—'} at {probe.frameRate ?? '—'} fps · valid {probe.validFrames ?? 0} · stale {probe.staleFrames ?? 0} · inference p95 {probe.inferenceMsP95?.toFixed(1) ?? '—'} ms</p>
       <p>Selected model hand: {probe.selectedHand ?? 'none'} · {probe.confirmationRequired ? 'Confirmation required after loss' : 'Continuity accepted'}. This is a conservative continuity heuristic.</p>
