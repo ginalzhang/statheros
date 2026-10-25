@@ -23,7 +23,7 @@ describe('§5.4 happy path (Auto, one breath, eager off)', () => {
 
     h.now = 0.26; h.stt({ type: 'SttConnected' });
     expect(h.state).toBe('LISTENING');
-    expect(h.find('StartForwarding', h.last)[0]?.fromTs).toBeCloseTo(-0.5);
+    expect(h.find('StartForwarding', h.last)[0]?.fromTs).toBeCloseTo(-1.5);
     expect(h.gate()).toBe(true);
     expect(h.timer('max_utterance')?.deadline).toBeCloseTo(15.26);
     expect(h.timer('no_speech')).toBeUndefined(); // vad_active → not armed
@@ -472,7 +472,7 @@ describe('wake rules', () => {
     h.send({ type: 'WakeDetected', phrase: 'hey cartesia', ts: 10, score: null });
     h.now = 11; h.send({ type: 'HotkeyToggle' });
     expect(h.state).toBe('PTT_ACTIVE');
-    expect(h.find('StartForwarding', h.last)[0]?.fromTs).toBeCloseTo(9.5);
+    expect(h.find('StartForwarding', h.last)[0]?.fromTs).toBeCloseTo(8.5);
     expect(h.find('PlayEarcon', h.last)).toEqual([]);
     expect(h.timer('ptt_auto_end')).toBeDefined();
   });
@@ -667,5 +667,38 @@ describe('capture failures', () => {
       expect(h.toasts()).toEqual([expect.stringMatching(toast)]);
       expect(h.find('Log')[0]?.fields).toMatchObject({ captureFailed: reason });
     }
+  });
+});
+
+describe('local command keywords (no wake phrase)', () => {
+  it('dispatches straight from PASSIVE without opening the cloud', () => {
+    const h = new Harness();
+    h.send({ type: 'LocalCommand', text: 'undo', ts: 1 });
+    expect(h.dispatched()).toEqual(['undo']);
+    expect(h.find('Dispatch')[0]?.command).toMatchObject({ source: 'local', confidence: 'high', tWake: null });
+    expect(h.find('OpenStt')).toEqual([]);
+    expect(h.find('SetCloudGate').some(action => action.on)).toBe(false);
+    expect(h.state).toBe('EXECUTING');
+  });
+  it('ignores repeats within the refractory window, but not a different command', () => {
+    const h = new Harness();
+    h.send({ type: 'LocalCommand', text: 'toggle erase', ts: 1 });
+    h.send({ type: 'LocalCommand', text: 'toggle erase', ts: 1.4 });
+    h.send({ type: 'LocalCommand', text: 'brush', ts: 1.5 });
+    expect(h.dispatched()).toEqual(['toggle erase', 'brush']);
+  });
+  it('is ignored while muted, during a cloud session, and while an earcon plays', () => {
+    const muted = new Harness();
+    muted.send({ type: 'Mute' }); muted.send({ type: 'LocalCommand', text: 'undo', ts: 1 });
+    expect(muted.dispatched()).toEqual([]);
+    const session = new Harness();
+    wakeAndConnect(session);
+    session.send({ type: 'LocalCommand', text: 'undo', ts: session.now });
+    expect(session.dispatched()).toEqual([]);
+    expect(session.state).toBe('LISTENING');
+    const gated = new Harness();
+    gated.ctx.wakeGatedUntil = 2;
+    gated.send({ type: 'LocalCommand', text: 'undo', ts: 1.5 });
+    expect(gated.dispatched()).toEqual([]);
   });
 });

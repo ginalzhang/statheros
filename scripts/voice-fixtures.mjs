@@ -30,5 +30,7 @@ try {
   wav('wake_pause_command.wav', join(noise(0.5), speech('Hey Cartesia.'), noise(2), speech('Pen down.'), noise(2.5)));
   wav('silence_5s.wav', noise(5));
   wav('double_wake_1s_apart.wav', join(noise(0.5), speech('Hey Cartesia.'), noise(0.2), speech('Hey Cartesia.'), noise(2)));
+  wav('mention_brush_no_wake.wav', join(noise(0.5), speech('Can you switch to the brush please.'), noise(2)));
+  wav('conversation_no_command.wav', join(noise(0.5), speech('I was thinking we could grab lunch later and talk about the project timeline.'), noise(2)));
   console.log('fixtures written to', out);
 } finally { rmSync(scratch, { recursive: true, force: true }); }

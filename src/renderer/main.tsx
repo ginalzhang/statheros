@@ -9,6 +9,8 @@ import { useVoice, useVoiceCapture, VoiceSettings, VoiceStrip } from './voice-ui
 import { BunnyMark } from './logo';
 import { Icon, type IconName } from './icons';
 import { activePreset, gainFromPercent, sensitivityPercent, STROKE_PRESETS } from './stroke-presets';
+import { edgeHint, rejectionHint } from './tracking';
+import { orientationFor } from '../shared/settings';
 
 const initialStatus: ProbeStatus = { native: null, displays: [], fault: null, collapsed: false, settingsOpen: false, generation: 0, realInput: false, microphoneEnabled: false };
 const initialProbe: ProbeReport = { message: 'Camera off', frames: 0, delegate: null, running: false };
@@ -79,6 +81,7 @@ function App(): React.JSX.Element {
         }
         if (message?.type === 'confirmHand') void window.steady.localAction('confirmHand').catch(cause => setError(String(cause)));
         if (message?.type === 'baseline') execute(() => controller.startBaseline());
+        if (message?.type === 'auto-capture' && typeof message.enabled === 'boolean') controller.setAutoCapture(message.enabled);
         if (message?.type === 'tuning') execute(() => {
           const c = controller.state.calibration;
           if (c) void window.steady.saveCalibration({ ...c, gain: message.gain, smoothing: message.smoothing }).catch(cause => setError(String(cause)));
@@ -101,6 +104,7 @@ function App(): React.JSX.Element {
     if (isSettings) return;
     setupRef.current?.update(status.settings, status.displays.find(d => d.id === status.selectedDisplayId), status.generation);
     probeRef.current?.preview(previewRef.current);
+    probeRef.current?.setOrientation(orientationFor(status.settings, status.settings?.cameraId ?? ''));
   }, [isSettings, status]);
 
   useEffect(() => window.steady.onLocalAction(id => {
@@ -148,8 +152,14 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
   const palm = (status.settings?.mode ?? 'head') === 'palm';
   const penDown = Boolean(status.native?.buttonDown);
   // Never show a false Active/Connected (handoff §04): status comes from the helper and the live feed.
-  const tracking: [string, string] = !native ? ['Connecting', 'muted'] : native === 'FAULT' ? ['Unavailable', 'bad'] : native === 'PAUSED' ? ['Paused', 'good strong'] : native === 'SETUP' ? ['Setting canvas', 'cyan'] : !probe.running ? ['No camera', 'bad'] : ['Active', 'good'];
+  const guide = setup?.calibrating && !setup.active ? setup.guide : null;
+  const hint = !probe.running ? null : edgeHint(probe.edge ?? null, palm ? 'palm' : 'head') ?? rejectionHint(probe.rejection, palm ? 'palm' : 'head')
+    ?? (guide ? (guide.wrongWay ? `${stepLabel(guide.step)} registers the opposite way — turn on ${flipForStep(guide.step) === 'flipY' ? 'Flip up/down' : 'Flip left/right'} in Settings` : guide.farEnough ? `${stepLabel(guide.step)}: hold still${guide.auto ? ` · ${Math.min(1, guide.steadyMs / 1000).toFixed(1)} s` : ''}` : guide.step === 'neutral' ? 'Neutral: show your hand' : `${stepLabel(guide.step)}: keep going a little`) : null);
+  const tracking: [string, string] = !native ? ['Connecting', 'muted'] : native === 'FAULT' ? ['Unavailable', 'bad'] : native === 'PAUSED' ? ['Paused', 'good strong'] : native === 'SETUP' ? ['Setting canvas', 'cyan'] : !probe.running ? ['No camera', 'bad']
+    : probe.confirmationRequired ? ['Hand lost', 'bad'] : probe.rejection ? [palm ? 'No hand' : 'No face', 'muted'] : ['Active', 'good'];
   const paused = !native || native === 'PAUSED' || native === 'FAULT';
+  // Quick pause/resume beside the tracking status and in the (collapsible) header; Resume still needs its usual prerequisites.
+  const trackingToggle: { id: 'pause' | 'resume'; label: string } | null = native === 'PAUSED' ? { id: 'resume', label: 'Resume' } : native === 'HOVER' || native === 'DRAWING' ? { id: 'pause', label: 'Pause' } : null;
   const preset = activePreset(calibration);
   const chips = useRef<HTMLDivElement | null>(null);
   const [scroll, setScroll] = useState({ left: 0, width: 1 });
@@ -159,6 +169,7 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
     <header className="panel-header">
       <BunnyMark size={22} />
       <strong>Statheros</strong>
+      {trackingToggle && <button className="icon" data-action={trackingToggle.id} onClick={() => action(trackingToggle.id)} aria-label={`${trackingToggle.label} tracking`} title={`${trackingToggle.label} tracking`}><Icon name={trackingToggle.id === 'resume' ? 'resumeTracking' : 'pauseTracking'} size={18} /></button>}
       {!status.collapsed && <button className="icon" data-action="openSettings" onClick={() => action('openSettings')} aria-label="Open settings" title="Settings"><Icon name="gear" size={18} /></button>}
       <button className="icon" data-action="togglePanel" onClick={() => action('togglePanel')} aria-label={status.collapsed ? 'Expand panel' : 'Collapse panel'} title={status.collapsed ? 'Expand' : 'Minimize'}><Icon name={status.collapsed ? 'chevronDown' : 'chevronUp'} size={16} /></button>
       {!status.collapsed && <button className="icon" data-action="quit" onClick={() => action('quit')} aria-label="Quit Steady" title="Quit"><Icon name="close" size={16} /></button>}
@@ -166,7 +177,10 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
     <div className="panel-content" hidden={status.collapsed}>
       <section className="panel-section" aria-labelledby="tracking-title">
         <h2 id="tracking-title">Tracking</h2>
-        <div className="row"><span>{palm ? 'Hand Tracking' : 'Head Tracking'}</span><span className={`value ${tracking[1]}`} role="status">{tracking[0]}</span></div>
+        <div className="row"><span>{palm ? 'Hand Tracking' : 'Head Tracking'}</span>
+          <span className="row-actions"><span className={`value ${tracking[1]}`} role="status">{tracking[0]}</span>
+            {trackingToggle && <button className="link" data-action={trackingToggle.id} onClick={() => action(trackingToggle.id)} aria-label={`${trackingToggle.label} tracking`}>{trackingToggle.label}</button>}</span>
+        </div>
         <div className="row"><span>Camera</span><span className={`value ${probe.running ? 'good' : 'muted'}`}>{probe.running ? 'Connected' : 'Off'}</span></div>
         <div className="row"><span>Canvas</span>
           {status.canvasSetup?.active
@@ -181,9 +195,11 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
         <h3>{palm ? 'Hand Preview' : 'Head Preview'}</h3>
         <canvas ref={previewRef} width={268} height={150} aria-label="Mirrored local camera preview" className="camera-preview" />
         {!probe.running && <p className="preview-empty">{probe.message}</p>}
-        {probe.confirmationRequired && <button className="chip confirm" data-action="confirmHand" onClick={() => action('confirmHand')}>Confirm selected hand</button>}
         <footer><span className={`dot ${tracking[1].startsWith('good') && !paused ? 'on' : ''}`} />{paused ? 'Tracking Paused' : tracking[0] === 'Active' ? 'Tracking Active' : tracking[0]}<span className="divider" /><span className="muted">{penDown ? 'Pen Down' : 'Pen Up'}</span></footer>
-      </section></div>
+      </section>
+        {hint && <p className={`preview-hint${probe.confirmationRequired ? ' warn' : ''}`} role="status">{hint}</p>}
+        {probe.confirmationRequired && <button className="confirm-hand" data-action="confirmHand" onClick={() => action('confirmHand')}>Confirm selected hand{probe.selectedHand ? ` (${probe.selectedHand})` : ''}</button>}
+      </div>
       <section className="panel-section" aria-labelledby="input-title">
         <h2 id="input-title">Input</h2>
         <p className="label">Drawing State</p>
@@ -242,6 +258,44 @@ function Slider({ label, value, disabled, onCommit }: { label: string; value: nu
   </label>;
 }
 
+const stepLabel = (step: string): string => step[0]!.toUpperCase() + step.slice(1);
+
+/** Live "far enough" meter + hold countdown + edge warning for the current calibration step. */
+/** Which camera axis to flip when the hand registers the opposite way on a step. */
+const flipForStep = (step: string): 'flipX' | 'flipY' => step === 'left' || step === 'right' ? 'flipX' : 'flipY';
+function WrongWay({ step, status, run }: { step: string; status: ProbeStatus; run: (work: () => Promise<void>) => void }): React.JSX.Element {
+  const axis = flipForStep(step), cameraId = status.settings?.cameraId ?? '';
+  const current = orientationFor(status.settings, cameraId);
+  const opposite = { left: 'right', right: 'left', up: 'down', down: 'up' }[step] ?? '';
+  return <div className="wrong-way" role="alert">
+    <p>Your hand is moving {opposite} in the camera view. The camera is probably mounted {axis === 'flipY' ? 'facing back toward you' : 'mirrored'}.</p>
+    <button disabled={!cameraId} onClick={() => run(() => window.steady.setCameraOrientation(cameraId, axis === 'flipX' ? !current.flipX : current.flipX, axis === 'flipY' ? !current.flipY : current.flipY))}>Turn on {axis === 'flipY' ? 'Flip up/down' : 'Flip left/right'} (recalibrate after)</button>
+  </div>;
+}
+function CalibrationGuideView({ setup, probe, mode, status, run }: { setup: SetupSnapshot; probe: ProbeReport; mode: Mode; status: ProbeStatus; run: (work: () => Promise<void>) => void }): React.JSX.Element {
+  const guide = setup.guide;
+  const edge = edgeHint(probe.edge ?? null, mode);
+  const fraction = guide?.offset != null && guide.target ? Math.max(0, Math.min(1, guide.offset / guide.target)) : guide?.step === 'neutral' && guide.farEnough ? 1 : 0;
+  return <div className="calibration-guide" role="status">
+    <div className={`meter${guide?.farEnough ? ' ok' : ''}`} aria-label="Distance from neutral"><span style={{ width: `${fraction * 100}%` }} /></div>
+    <p>{setup.active ? 'Capturing — keep holding…' : !guide ? 'Show your hand to the camera.' : guide.farEnough ? `Far enough — hold still${guide.auto ? ` (${Math.min(1, guide.steadyMs / 1000).toFixed(1)} / 1.0 s)` : ', then press Capture'}` : guide.step === 'neutral' ? 'Show your hand and rest it in a comfortable middle position.' : `${stepLabel(guide.step)}: keep going a little — a short move is enough`}</p>
+    {edge && <p className="error">{edge}</p>}
+    {guide?.wrongWay && <WrongWay step={guide.step} status={status} run={run} />}
+  </div>;
+}
+
+/** Camera mount orientation (e.g. an overhead tripod). Changing it requires recalibration. */
+function Orientation({ status, run }: { status: ProbeStatus; run: (work: () => Promise<void>) => void }): React.JSX.Element {
+  const cameraId = status.settings?.cameraId ?? '';
+  const current = orientationFor(status.settings, cameraId);
+  const set = (flipX: boolean, flipY: boolean): void => run(() => window.steady.setCameraOrientation(cameraId, flipX, flipY));
+  return <div className="orientation">
+    <label className="confirmation"><input type="checkbox" disabled={!cameraId} checked={current.flipX} onChange={event => set(event.target.checked, current.flipY)} />Flip left/right (the preview moves opposite to your hand)</label>
+    <label className="confirmation"><input type="checkbox" disabled={!cameraId} checked={current.flipY} onChange={event => set(current.flipX, event.target.checked)} />Flip up/down (camera mounted upside down or looking back at you)</label>
+    <p className="secondary">Changing orientation pauses input and clears this camera's calibration.</p>
+  </div>;
+}
+
 function Settings({ status, probe, setup, feedback, run, channel, voice }: { status: ProbeStatus; probe: ProbeReport; setup: SetupSnapshot | null; feedback: string | null; run: (work: () => Promise<void>) => void; channel: React.RefObject<BroadcastChannel | null>; voice: React.ReactNode }): React.JSX.Element {
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [cameraId, setCameraId] = useState(status.settings?.cameraId ?? '');
@@ -283,6 +337,7 @@ function Settings({ status, probe, setup, feedback, run, channel, voice }: { sta
       <label>Mode<select value={mode} onChange={event => { stop(); setMode(event.target.value as Mode); run(() => window.steady.selectCamera(cameraId, event.target.value as Mode)); }}><option value="head">Head</option><option value="palm">Palm</option></select></label>
       <label>Camera<select value={cameraId} onChange={event => { stop(); setCameraId(event.target.value); run(() => window.steady.selectCamera(event.target.value, mode)); }}><option value="">Default camera</option>{cameras.map((camera, index) => <option key={camera.deviceId || index} value={camera.deviceId}>{camera.label || `Camera ${index + 1}`}</option>)}</select></label>
       <div className="settings-actions"><button onClick={start}>Start camera probe</button><button onClick={stop}>Stop camera probe</button><button onClick={refresh}>Refresh cameras</button></div>
+      <Orientation status={status} run={run} />
       <p role="status">{probe.message} · {probe.frames} frames{probe.delegate ? ` · ${probe.delegate}` : ''}</p>
       <p>Actual: {probe.width ?? '—'}×{probe.height ?? '—'} at {probe.frameRate ?? '—'} fps · valid {probe.validFrames ?? 0} · stale {probe.staleFrames ?? 0} · inference p95 {probe.inferenceMsP95?.toFixed(1) ?? '—'} ms</p>
       <p>Selected model hand: {probe.selectedHand ?? 'none'} · {probe.confirmationRequired ? 'Confirmation required after loss' : 'Continuity accepted'}. This is a conservative continuity heuristic.</p>
@@ -293,9 +348,11 @@ function Settings({ status, probe, setup, feedback, run, channel, voice }: { sta
     </section>
     <section aria-labelledby="calibration-heading">
       <h2 id="calibration-heading">Five-position calibration</h2>
-      <p>Neutral → comfortable left → right → up → down. Take as long as needed to reach each position, then Capture holds a two-second window. Each capture needs at least 40 valid frames and 80% validity. Small movement bounds require a retry.</p>
+      <p>Neutral → comfortable left → right → up → down. Each direction needs only a short move from neutral; never reach for the frame edge. Hold still for a second and it captures automatically (or press Capture), then keep holding for the two-second window. Each capture needs at least 40 valid frames and 80% validity. Small movement bounds require a retry.</p>
       <p role="status" data-testid="setup-message">{setup?.message ?? 'Start the camera to begin.'}</p>
       <p>Current step: {setup?.step ?? 'none'}{setup?.active ? ' · sampling' : ''}</p>
+      {setup?.calibrating && <CalibrationGuideView setup={setup} probe={probe} mode={mode} status={status} run={run} />}
+      <label className="confirmation"><input type="checkbox" checked={setup?.guide?.auto ?? true} onChange={event => send('auto-capture', { enabled: event.target.checked })} />Auto-capture when I hold still for 1 second (Capture still works manually)</label>
       <div className="settings-actions"><button disabled={!probe.running || setup?.active} onClick={() => send('calibrate')}>Begin five-position calibration</button><button disabled={!setup?.calibrating || setup.active} onClick={() => send('capture')}>Capture / Retry</button><button onClick={() => send('cancel')}>Cancel calibration</button><button disabled={!setup?.calibration || setup.active || !probe.running} onClick={() => send('recenter')}>Recenter neutral</button></div>
       {setup?.calibration && <>
         <p>Calibration saved for {setup.calibration.mode} / {setup.calibration.cameraId.slice(0, 12)}. Neutral jitter (scaled MAD): {setup.calibration.jitter.x.toFixed(5)}, {setup.calibration.jitter.y.toFixed(5)}.</p>

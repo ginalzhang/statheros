@@ -2,9 +2,26 @@ import type { CalibrationV1, DisplayInfo, Point, TrackingProbeMetrics, TrackingS
 import type { SettingsV1 } from '../shared/settings';
 import { CalibrationCapture, CalibrationSession, TrackingEngine, recenterCalibration, type CaptureStep } from './engine';
 
+/**
+ * Live calibration guide. `offset` is the signed distance from the neutral capture in the step's
+ * direction; `target` is a comfortable margin over the hard rule (> 0.01 and > 3 × neutral jitter).
+ */
+export interface CalibrationGuide {
+  step: CaptureStep; offset: number | null; target: number | null; farEnough: boolean; steadyMs: number; auto: boolean;
+  /** The hand moved at least `target` the opposite way: the camera axis is likely flipped for this mount. */
+  wrongWay: boolean;
+}
+/** Auto-capture: hold still this long (all frames valid, spread ≤ HOLD_SPREAD) once far enough. */
+export const HOLD_MS = 1000;
+export const HOLD_SPREAD = 0.015;
+export const targetFor = (jitter: number): number => Math.max(0.05, 4 * jitter);
+const STEP_PROMPTS: Record<CaptureStep, string> = {
+  neutral: 'Rest your hand in a comfortable middle position.',
+  left: 'Move a little to your left', right: 'Move a little to your right', up: 'Move a little up', down: 'Move a little down',
+};
 export interface SetupSnapshot {
   step: CaptureStep | null; active: boolean; calibrating: boolean; recentering: boolean;
-  message: string; calibration: CalibrationV1 | null; position: Point | null;
+  message: string; calibration: CalibrationV1 | null; position: Point | null; guide: CalibrationGuide | null;
   metrics: TrackingProbeMetrics; baseline: 'idle' | 'warmup' | 'measuring' | 'complete';
 }
 const emptyMetrics = (): TrackingProbeMetrics => ({ frames: 0, validFrames: 0, mappedFrames: 0, elapsedMs: 0, mappingHz: 0, receiptToMappedP95Ms: null, position: null, reason: 'No mapped samples' });
@@ -23,7 +40,12 @@ export class SetupController {
   private baselineStart: number | null = null;
   private latencies: number[] = [];
   private lastEmit = -Infinity;
-  state: SetupSnapshot = { step: null, active: false, calibrating: false, recentering: false, message: 'Select a camera and start tracking, then calibrate.', calibration: null, position: null, metrics: emptyMetrics(), baseline: 'idle' };
+  state: SetupSnapshot = { step: null, active: false, calibrating: false, recentering: false, message: 'Select a camera and start tracking, then calibrate.', calibration: null, position: null, guide: null, metrics: emptyMetrics(), baseline: 'idle' };
+  autoCapture = true;
+  private hold: { anchor: Point; at: number }[] = [];
+  /** Wrong-way detection starts only after the hand passes near neutral during the current step
+   *  (Right starts from the Left position and Down from Up, which are legitimately "opposite"). */
+  private nearNeutral: { step: CaptureStep | null; seen: boolean } = { step: null, seen: false };
   constructor(private changed: (snapshot: SetupSnapshot) => void, private save: (calibration: CalibrationV1) => Promise<void>, private mapped: (sample: TrackingSample, position: Point | null) => void, private recorded: (metrics: TrackingProbeMetrics) => void = () => {}) {}
   update(settings: SettingsV1 | undefined, display: DisplayInfo | undefined, generation: number): void {
     if (!settings) return;
@@ -42,12 +64,14 @@ export class SetupController {
     if (!this.settings?.cameraId) throw new Error('Start a selected camera before calibrating.');
     this.cancel(false);
     this.session = new CalibrationSession({ cameraId: this.settings.cameraId, mode: this.settings.mode, generation: this.generation });
-    this.state = { ...this.state, calibrating: true, step: 'neutral', message: 'Hold a neutral position. Capture samples for two seconds when you are ready.' };
+    this.hold = [];
+    this.state = { ...this.state, calibrating: true, step: 'neutral', message: this.prompt('neutral') };
     this.emit();
   }
   capture(): void {
     if (!this.session || this.state.active) throw new Error('Start calibration before Capture.');
-    this.session.start(performance.now()); this.state.active = true; this.state.message = `Capturing ${this.session.step} for two seconds…`; this.emit();
+    this.hold = [];
+    this.session.start(performance.now()); this.state.active = true; this.state.guide = null; this.state.message = `Capturing ${this.session.step} for two seconds — keep holding…`; this.emit();
     this.timer = setTimeout(() => { void this.finish(); }, 2005);
   }
   beginRecenter(): void {
@@ -60,16 +84,16 @@ export class SetupController {
   private async finish(): Promise<void> {
     const session = this.session, recenter = this.recenter;
     const result = recenter ? recenter.finish(performance.now()) : session?.finish(performance.now());
-    this.state.active = false;
+    this.state.active = false; this.hold = [];
     if (!result) return;
-    if (!result.ok) { this.recenter = null; this.state.recentering = false; this.state.message = `${result.reason}. Retry Capture or Cancel.`; this.emit(); return; }
+    if (!result.ok) { this.recenter = null; this.state.recentering = false; this.state.message = /Retry|Cancel/.test(result.reason) ? result.reason : `${result.reason}. Retry Capture or Cancel.`; this.emit(); return; }
     const counts = `${result.capture.validSamples}/${result.capture.totalFrames} valid frames`;
     try {
       if (recenter && this.state.calibration) {
         const calibration = recenterCalibration(this.state.calibration, result.capture);
         await this.save(calibration); this.engine?.reset(calibration); this.recenter = null; this.state.recentering = false; this.state.calibration = calibration; this.state.message = `Recenter saved (${counts}). Extents preserved, filters reset, input paused.`;
       } else if (session?.step) {
-        this.state.step = session.step; this.state.message = `Captured ${counts}. Move comfortably ${session.step}; press Capture when ready.`;
+        this.state.step = session.step; this.state.message = `Captured ${counts}. ${this.prompt(session.step)}`;
       } else if (session) {
         const calibration = session.build(); await this.save(calibration); this.session = null; this.state.calibrating = false; this.state.step = null; this.state.calibration = calibration;
         this.state.message = `Five-position calibration saved (${counts}). Input paused; canvas confirmation remains required.`;
@@ -79,7 +103,7 @@ export class SetupController {
   }
   cancel(emit = true): void {
     clearTimeout(this.timer); this.timer = undefined; this.session?.cancel(); this.session = null; this.recenter = null;
-    this.state.active = false; this.state.calibrating = false; this.state.recentering = false; this.state.step = null; this.state.baseline = 'idle';
+    this.state.active = false; this.state.calibrating = false; this.state.recentering = false; this.state.step = null; this.state.baseline = 'idle'; this.state.guide = null; this.hold = [];
     this.engine?.reset(); this.baselineStart = null; clearTimeout(this.baselineWarmupTimer); clearTimeout(this.baselineFinishTimer);
     if (emit) { this.state.message = 'Calibration cancelled; input paused.'; this.emit(); }
   }
@@ -93,6 +117,7 @@ export class SetupController {
   sample(sample: TrackingSample): void {
     const received = performance.now();
     this.session?.add(sample, received); this.recenter?.add(sample, received);
+    this.guide(sample, received);
     const result = this.engine?.process(sample, received);
     const position = result?.valid ? result.position : null;
     this.state.position = position ?? null;
@@ -116,6 +141,38 @@ export class SetupController {
     if (this.baselineStart === null) return;
     this.state.metrics.elapsedMs = 60_000; this.state.metrics.mappingHz = this.state.metrics.mappedFrames / 60;
     this.state.baseline = 'complete'; this.baselineStart = null; this.recorded(structuredClone(this.state.metrics)); this.emit();
+  }
+  setAutoCapture(enabled: boolean): void { this.autoCapture = enabled; this.hold = []; if (this.state.guide) this.state.guide = { ...this.state.guide, auto: enabled }; this.emit(); }
+  private prompt(step: CaptureStep): string {
+    const hold = this.autoCapture ? 'Hold still to capture.' : 'Press Capture when ready.';
+    return step === 'neutral' ? `${STEP_PROMPTS.neutral} ${hold}` : `${STEP_PROMPTS[step]} — you don't need to reach the edge. ${hold}`;
+  }
+  /** Live guide between captures; starts a capture after HOLD_MS steady once far enough. */
+  private guide(sample: TrackingSample, received: number): void {
+    const session = this.session, step = session?.step;
+    if (!session || !step || this.state.active || !this.state.calibrating) return;
+    if (!sample.valid || !sample.anchor) this.hold = [];
+    else {
+      this.hold.push({ anchor: { ...sample.anchor }, at: received });
+      while (this.hold.length && received - this.hold[0]!.at > HOLD_MS) this.hold.shift();
+      const first = this.hold[0]!.anchor;
+      if (this.hold.some(entry => Math.hypot(entry.anchor.x - first.x, entry.anchor.y - first.y) > HOLD_SPREAD)) this.hold = [this.hold.at(-1)!];
+    }
+    const neutral = session.neutral;
+    let offset: number | null = null, target: number | null = null;
+    if (step !== 'neutral' && neutral && sample.valid && sample.anchor) {
+      const a = sample.anchor, n = neutral.position;
+      offset = step === 'left' ? n.x - a.x : step === 'right' ? a.x - n.x : step === 'up' ? n.y - a.y : a.y - n.y;
+      target = targetFor(step === 'left' || step === 'right' ? neutral.jitter.x : neutral.jitter.y);
+    }
+    const farEnough = step === 'neutral' ? Boolean(sample.valid) : offset !== null && target !== null && offset >= target;
+    const steadyMs = this.hold.length > 1 ? this.hold.at(-1)!.at - this.hold[0]!.at : 0;
+    if (this.nearNeutral.step !== step) this.nearNeutral = { step, seen: false };
+    if (offset !== null && target !== null && Math.abs(offset) < target / 2) this.nearNeutral.seen = true;
+    const wrongWay = this.nearNeutral.seen && offset !== null && target !== null && -offset >= target;
+    this.state.guide = { step, offset, target, farEnough, steadyMs: farEnough ? steadyMs : 0, auto: this.autoCapture, wrongWay };
+    // Spans of ≥ HOLD_MS minus one frame count as a full second of holding.
+    if (this.autoCapture && farEnough && steadyMs >= HOLD_MS - 40) this.capture();
   }
   snapshot(): SetupSnapshot { return structuredClone(this.state); }
   private emit(): void { this.changed(this.snapshot()); }

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CameraProbe, type ProbeReport } from '../../src/renderer/probe';
+import { HAND_LOSS_MS } from '../../src/renderer/tracking';
 import type { TrackingSample } from '../../src/shared/contracts';
 
 class FakeWorker {
@@ -52,7 +53,8 @@ describe('CameraProbe lifecycle with fake media and worker', () => {
     await camera.start('', 'palm'); const worker = FakeWorker.all[0]!; worker.receive({ type: 'ready', delegate: 'CPU' });
     receiveFrame(1); await vi.advanceTimersByTimeAsync(34); const frame = worker.sent.find(value => value.type === 'frame');
     worker.receive(result(frame)); expect(output).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(250); expect(fault).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(250); expect(fault).not.toHaveBeenCalled(); // input pause is native; no lock yet
+    await vi.advanceTimersByTimeAsync(HAND_LOSS_MS - 250 + 10); expect(fault).toHaveBeenCalledOnce(); // next 10 ms watchdog tick
     expect(report.mock.lastCall?.[0].confirmationRequired).toBe(true);
     expect(camera.confirmHand()).toBe(false);
     receiveFrame(2); await vi.advanceTimersByTimeAsync(34); const next = worker.sent.filter(value => value.type === 'frame')[1];

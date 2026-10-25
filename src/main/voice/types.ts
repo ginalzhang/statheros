@@ -17,12 +17,14 @@ export const UTTERANCE_TIMERS: readonly TimerName[] = ['watchdog', 'forced_end']
 export const UNSTAMPED_TIMERS: readonly TimerName[] = ['wake_gate_tail', 'gate_cap'];
 
 export interface CommandEvent {
-  cmdId: number; text: string; kind: 'command' | 'dictation'; source: 'wake' | 'ptt'; confidence: Confidence;
+  cmdId: number; text: string; kind: 'command' | 'dictation'; source: 'wake' | 'ptt' | 'local'; confidence: Confidence;
   utteranceGen: number; sessionId: number; tWake: number | null; tSpeechEnd: number | null; tFinal: number;
 }
 
 export type VoiceEvent =
   | { type: 'WakeDetected'; phrase: string; ts: number; score: number | null }
+  /** A command keyword spotted on-device: runs without the wake phrase or the cloud. */
+  | { type: 'LocalCommand'; text: string; ts: number }
   | { type: 'VadSpeechStart'; ts: number }
   | { type: 'VadSpeechEnd'; ts: number; speechMs: number }
   | { type: 'HotkeyDown'; ts: number }
@@ -84,7 +86,7 @@ export type VoiceAction =
 export interface LiveTimer { deadline: number; stamp: number; seq: number }
 
 export interface VoiceContext {
-  state: VoiceState; gen: number; sessionId: number | null; sessionCounter: number; source: 'wake' | 'ptt' | null; endpoint: Endpoint;
+  state: VoiceState; gen: number; sessionId: number | null; sessionCounter: number; source: 'wake' | 'ptt' | 'local' | null; endpoint: Endpoint;
   pttMode: 'hold' | 'toggle'; hotkeyDownTs: number | null; releaseDeferred: boolean; detectionTs: number | null; lastWakeTs: number;
   vadActive: boolean; vadRawActive: boolean; lastVadEndTs: number | null; speechMs: number | null;
   lastPartial: string | null; lastPartialEager: boolean; pendingPrefix: string | null; remnantTurns: number; closeSent: boolean; sttConnected: boolean;
@@ -92,7 +94,7 @@ export interface VoiceContext {
   wakeGatedUntil: number; livePlaybacks: Set<string>; gatingPlayId: string | null;
   timers: Map<TimerName, LiveTimer>; timerSeq: number;
   sttDisabled: boolean; sttDisabledMessage: string | null; deviceSwapUntil: number; mutedReason: 'user' | 'permission' | null; lastAttentionTs: number;
-  lastError: string | null; tSpeechEnd: number | null;
+  lastError: string | null; tSpeechEnd: number | null; lastLocalCommand: { text: string; ts: number } | null;
 }
 
 export function createContext(options: { abortSupported: boolean; sttDisabled?: boolean; sttDisabledMessage?: string | null }): VoiceContext {
@@ -103,7 +105,7 @@ export function createContext(options: { abortSupported: boolean; sttDisabled?: 
     cmdCounter: 0, inFlightCmd: null, abortSupported: options.abortSupported, bargeIn: false,
     wakeGatedUntil: -Infinity, livePlaybacks: new Set(), gatingPlayId: null, timers: new Map(), timerSeq: 0,
     sttDisabled: options.sttDisabled ?? false, sttDisabledMessage: options.sttDisabledMessage ?? null, deviceSwapUntil: -Infinity,
-    mutedReason: null, lastAttentionTs: -Infinity, lastError: null, tSpeechEnd: null,
+    mutedReason: null, lastAttentionTs: -Infinity, lastError: null, tSpeechEnd: null, lastLocalCommand: null,
   };
 }
 

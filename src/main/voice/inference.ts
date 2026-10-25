@@ -18,7 +18,18 @@ export interface InferenceInit {
 }
 export interface InferenceResult {
   ts: number; vadActive: boolean; rawActive: boolean; vadEvent: VadEvent | null;
-  wake: { phrase: string; ts: number } | null; inferMs: number;
+  wake: { phrase: string; ts: number } | null;
+  /** A Steady command spotted locally (no wake phrase needed), as its vocabulary phrase. */
+  command: { text: string; ts: number } | null;
+  inferMs: number;
+}
+
+/** Keyword display labels (resources/voice/keywords_raw.txt) → wake, local stop, or a command phrase. */
+export function keywordMeaning(label: string): { kind: 'wake' } | { kind: 'stop' } | { kind: 'command'; text: string } {
+  const upper = label.toUpperCase();
+  if (upper === 'STOP') return { kind: 'stop' };
+  if (upper === 'HEY_CARTESIA') return { kind: 'wake' };
+  return { kind: 'command', text: upper.toLowerCase().replace(/_/g, ' ') };
 }
 
 interface Stream { acceptWaveform(input: { sampleRate: number; samples: Float32Array }): void }
@@ -76,7 +87,7 @@ export class Inference {
       while (!this.silero.isEmpty()) this.silero.pop();
     } else above = energyAbove(pcm);
     const vadEvent = this.vad.process(above, ts);
-    let wake: InferenceResult['wake'] = null;
+    let wake: InferenceResult['wake'] = null, command: InferenceResult['command'] = null;
     if (this.spotter && this.stream) {
       // Keep feeding while gated or refractory: pausing would re-trigger on buffered audio.
       this.stream.acceptWaveform({ sampleRate: 16000, samples });
@@ -85,9 +96,12 @@ export class Inference {
         const keyword = this.spotter.getResult(this.stream).keyword;
         if (!keyword) continue;
         this.spotter.reset(this.stream);
-        if (this.wakeEnabled) wake = { phrase: keyword.toUpperCase() === 'STOP' ? 'stop' : this.init.wakePhrase, ts: ts + pcm.length / 16000 };
+        if (!this.wakeEnabled) continue;
+        const meaning = keywordMeaning(keyword), at = ts + pcm.length / 16000;
+        if (meaning.kind === 'command') command = { text: meaning.text, ts: at };
+        else wake = { phrase: meaning.kind === 'stop' ? 'stop' : this.init.wakePhrase, ts: at };
       }
     }
-    return { ts, vadActive: this.vad.isActive, rawActive: this.vad.rawActive, vadEvent, wake, inferMs: performance.now() - started };
+    return { ts, vadActive: this.vad.isActive, rawActive: this.vad.rawActive, vadEvent, wake, command, inferMs: performance.now() - started };
   }
 }

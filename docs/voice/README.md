@@ -1,10 +1,10 @@
-# Voice input: "Hey Cartesia" + push-to-talk
+# Voice input: local command words, "Hey Cartesia" and push-to-talk
 
 Built from [the implementation prompt](CARTESIA_VOICE_INPUT_PROMPT.md); stack findings are in [DISCOVERY.md](DISCOVERY.md) and measurements in [REPORT.md](REPORT.md).
 
 - **Wake word (local).** sherpa-onnx keyword spotting (`sherpa-onnx-kws-zipformer-gigaspeech-3.3M`, int8) plus Silero VAD, running on a worker thread in the main process. Nothing leaves the Mac until the **red cloud dot** appears.
 - **Speech to text (cloud).** Cartesia Ink (`ink-2`) over a raw WebSocket in the main process, one socket per utterance. Wake mode uses the Auto (turns) endpoint and push-to-talk uses the Manual endpoint.
-- **Commands.** Steady's fixed vocabulary. The wake phrase replaces the spoken "Steady" prefix: "hey cartesia, pen down", "hey cartesia, undo", or just "pen down" with push-to-talk.
+- **Commands (local, no wake phrase).** The same keyword spotter also listens for every Steady command ("undo", "redo", "brush", "eraser"/"erase", "pen down", "bigger", "pause"…; see `resources/voice/keywords_raw.txt`). With the mic on, a spotted command runs immediately, even mid-sentence ("switch to the brush"), and no audio leaves the Mac. After "hey cartesia" or push-to-talk, the Cartesia transcript is searched the same way: exactly one mentioned command runs. Two different commands in one utterance are rejected. Eraser is a toggle.
 
 ## Setup
 
@@ -28,6 +28,10 @@ Steady launches **microphone-off**. Click the mic button on the panel (or press 
 | "cancel", "never mind" | abort the utterance; never sent as a command |
 
 Electron's `globalShortcut` fires on key-down only, so there is no hold-to-talk: the hotkey toggles. ⌘⇧Space can conflict with input-source switching on some setups, so check the toast at launch. macOS Secure Input (a focused password field) swallows global keys; the panel button still works. Because the panel never takes focus, Esc cannot cancel; use the transcript click or the hotkey. Voice "cancel" cannot press a Cancel button in Krita. Steady commands are atomic native actions with no abort hook, so "stop" during a command says "Can't stop that one".
+
+## Changing command words or sensitivity
+
+Edit `resources/voice/keywords_raw.txt` (`TEXT @LABEL :boost #threshold`; the label is the command phrase in capitals with `_` for spaces, and must be in `src/main/voice/steady-commands.ts`). Add respellings for words the spotter misses (as with `ERACE`), raise `#threshold` if it fires by accident, then regenerate `keywords.txt` with the command below.
 
 ## Changing the wake phrase
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { defaultVoiceConfig } from '../../src/main/voice/config';
@@ -9,7 +9,8 @@ import { RingBuffer, FRAME_SAMPLES } from '../../src/main/voice/audio';
 import { LocalVad } from '../../src/main/voice/vad';
 import { sttUrl } from '../../src/main/voice/stt-session';
 import { PidLock } from '../../src/main/voice/lock';
-import { parseSteadyCommand } from '../../src/main/voice/steady-commands';
+import { findSteadyCommands, parseSteadyCommand } from '../../src/main/voice/steady-commands';
+import { keywordMeaning } from '../../src/main/voice/inference';
 
 describe('transcript builders', () => {
   it('Auto: cumulative replace, eager flag, resume, Final on turn.end', () => {
@@ -174,21 +175,41 @@ describe('PidLock', () => {
 });
 
 describe('Steady voice vocabulary', () => {
-  it('maps the fixed vocabulary and rejects everything else', () => {
+  it('picks out a single command mentioned anywhere', () => {
     expect(parseSteadyCommand('Pen down.')).toBe('penDown');
     expect(parseSteadyCommand('steady undo')).toBe('undo');
     expect(parseSteadyCommand('Toggle erase!')).toBe('toggleErase');
     expect(parseSteadyCommand('microphone off')).toBe('microphoneOff');
-    expect(parseSteadyCommand('put the pen down')).toBeNull();
+    expect(parseSteadyCommand('Here okay, undo.')).toBe('undo');
+    expect(parseSteadyCommand('a cartesia, can you switch to the brush please')).toBe('brush');
+    expect(parseSteadyCommand('okay now erase this part')).toBe('toggleErase');
+    expect(parseSteadyCommand('use the eraser')).toBe('toggleErase');
+    expect(parseSteadyCommand('put the pen down')).toBe('penDown');
+    expect(parseSteadyCommand('make it a bit bigger')).toBe('bigger');
+    expect(parseSteadyCommand('mic off')).toBe('microphoneOff');
+    expect(parseSteadyCommand('undo, undo')).toBe('undo');
+  });
+  it('rejects no command or more than one', () => {
+    expect(parseSteadyCommand('a cartesia')).toBeNull();
+    expect(parseSteadyCommand('the pen is on the table')).toBeNull();
     expect(parseSteadyCommand('undo redo')).toBeNull();
-    // A misheard wake phrase ("hey cartesia" → "here okay") may precede the command after a wake detection only.
-    expect(parseSteadyCommand('Here okay, undo.', 'wake')).toBe('undo');
-    expect(parseSteadyCommand('okay pen down', 'wake')).toBe('penDown');
-    expect(parseSteadyCommand('here okay steady undo', 'wake')).toBe('undo');
-    expect(parseSteadyCommand('here okay undo')).toBeNull();
-    expect(parseSteadyCommand('here okay undo', 'ptt')).toBeNull();
-    expect(parseSteadyCommand('one two three undo', 'wake')).toBeNull();
-    expect(parseSteadyCommand('undo redo', 'wake')).toBeNull();
-    expect(parseSteadyCommand('pen up down', 'wake')).toBeNull();
+    expect(findSteadyCommands('brush then bigger')).toEqual(['brush', 'bigger']);
+    // Longest phrase wins: one mention, not "toggle" + "erase".
+    expect(findSteadyCommands('toggle erase')).toEqual(['toggleErase']);
+  });
+});
+
+describe('keyword labels', () => {
+  it('maps spotter labels to wake, stop or a command phrase', () => {
+    expect(keywordMeaning('HEY_CARTESIA')).toEqual({ kind: 'wake' });
+    expect(keywordMeaning('STOP')).toEqual({ kind: 'stop' });
+    expect(keywordMeaning('TOGGLE_ERASE')).toEqual({ kind: 'command', text: 'toggle erase' });
+  });
+  it('every spotter command label is a vocabulary phrase', () => {
+    const labels = readFileSync('resources/voice/keywords_raw.txt', 'utf8').split('\n').map(line => /@(\S+)/.exec(line)?.[1]).filter((label): label is string => Boolean(label));
+    for (const label of labels) {
+      const meaning = keywordMeaning(label);
+      if (meaning.kind === 'command') expect(parseSteadyCommand(meaning.text), label).not.toBeNull();
+    }
   });
 });

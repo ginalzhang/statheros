@@ -22,7 +22,8 @@ import { SettingsStore } from './settings';
 import { defaultSettings, withCalibration } from '../shared/settings';
 import { isCalibrationV1 } from '../renderer/engine';
 import { ElectronVoice } from './voice/electron-voice';
-import { parseSteadyCommand, VOICE_LABELS } from './voice/steady-commands';
+import { findSteadyCommands, VOICE_LABELS } from './voice/steady-commands';
+import { explainRejection } from './rejections';
 import type { CommandEvent } from './voice/types';
 import type { VoiceCaptureReport } from '../shared/voice';
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -117,7 +118,8 @@ function fixedKritaProfile(): boolean {
     (Object.keys(expected.shortcuts) as (keyof typeof expected.shortcuts)[]).every(key => actual.shortcuts[key] === expected.shortcuts[key]);
 }
 function enqueueAction(action: LocalActionID, eventId = randomUUID()): Promise<Ack | null> {
-  return deliverCommand(configuration, () => generation, action, () => dispatch(action, eventId));
+  return deliverCommand(configuration, () => generation, action, () => dispatch(action, eventId))
+    .catch((error: unknown) => { throw error instanceof Error ? new Error(explainRejection(error.message, status.native)) : error; });
 }
 async function dispatch(actionId: LocalActionID, eventId: string = randomUUID()): Promise<Ack | null> {
   if (!isLocalAction(actionId)) throw new Error('Unknown action');
@@ -206,8 +208,10 @@ async function microphone(enabled: boolean): Promise<void> {
 /** <<COMMAND_ENTRYPOINT>> for voice: the shared dispatcher, resolving after the native ack. */
 async function executeVoiceCommand(command: CommandEvent): Promise<string | null> {
   if (command.kind === 'dictation') throw new Error("Dictation isn't available in Steady");
-  const action = parseSteadyCommand(command.text, command.source);
-  if (!action) throw new Error(`“${command.text.slice(0, 40)}” isn't a Steady command`);
+  const actions = findSteadyCommands(command.text);
+  if (actions.length === 0) throw new Error(`No command heard in “${command.text.slice(0, 40)}”`);
+  if (actions.length > 1) throw new Error(`Heard more than one command (${actions.map(id => VOICE_LABELS[id].toLowerCase()).join(', ')}): say one at a time`);
+  const action = actions[0]!;
   await enqueueAction(action);
   return VOICE_LABELS[action];
 }
@@ -307,6 +311,16 @@ function installIPC(): void {
     if(!current||fixed(current)!==fixed(value))throw new Error('Only smoothing and sensitivity can be tuned from the panel');
     if(status.native?.buttonDown)await supervisor?.request('action',{generation,eventId:randomUUID(),actionId:'penUp'});
     savedSettings=withCalibration(savedSettings,value);settingsStore.save(savedSettings);status.settings=savedSettings;publish();
+  }));
+  // Orientation changes the tracked coordinate space: the camera's saved calibrations no longer apply.
+  handle('set-orientation',(cameraId:unknown,flipX:unknown,flipY:unknown)=>configuration.run(async()=>{
+    if(typeof cameraId!=='string'||cameraId.length>1024||typeof flipX!=='boolean'||typeof flipY!=='boolean')throw new Error('Invalid camera orientation');
+    await pause('Camera orientation changed; recalibrate');generation++;
+    const orientations=[...(savedSettings.orientations??[]).filter(entry=>entry.cameraId!==cameraId),...(flipX||flipY?[{cameraId,flipX,flipY}]:[])];
+    savedSettings={...savedSettings,orientations,calibrations:savedSettings.calibrations.filter(c=>c.cameraId!==cameraId)};
+    if(!orientations.length)delete savedSettings.orientations;
+    settingsStore.save(savedSettings);status.settings=savedSettings;status.canvasConfirmed=false;
+    invalidateCanvas();await configureControl();status.fault='Camera orientation changed; recalibrate';publish();
   }));
   handle('panel-opacity',(opacity:unknown)=>{if(opacity!==1&&opacity!==0.7)throw new Error('Invalid opacity');panel?.setOpacity(opacity);status.panelOpacity=opacity;publish();});
   handle('select-display',(displayId:unknown)=>configuration.run(async()=>{
