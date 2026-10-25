@@ -12,6 +12,17 @@ const UNREACHABLE = "Couldn't reach Cartesia";
 const NETWORK = "Can't reach Cartesia — check network";
 const LOST = 'Lost connection, say that again';
 const DIDNT_CATCH = "Didn't catch that";
+const MIC_PERMISSION = 'Microphone permission needed for Steady — open System Settings › Privacy › Microphone';
+
+/** The capture reason decides the hint; only a real denial is reported as a permission problem. */
+export function captureFailedMessage(reason: string): string {
+  if (/^(denied|restricted)$|^NotAllowedError\b/.test(reason)) return MIC_PERMISSION;
+  // macOS feeds exact zeros when the grant belongs to an earlier (re-signed) build.
+  if (reason === 'silent input') return 'Mic is sending only silence — macOS may be blocking this build. Run `tccutil reset Microphone org.steady.local`, relaunch and allow again';
+  if (/^NotFoundError\b/.test(reason)) return 'No microphone found — connect or select an input device';
+  if (/^NotReadableError\b/.test(reason)) return 'Microphone is busy or unavailable — close other apps using it and try again';
+  return `Couldn't open the microphone (${reason})`;
+}
 
 /**
  * Pure voice state machine (prompt §5). `handle` is the only mutator of the context
@@ -59,8 +70,9 @@ class Step {
       case 'PlaybackStopped': this.playbackStopped(ev.playId); break;
       case 'ProbeResult': this.probe(ev.ok, ev.code); break;
       case 'CaptureFailed':
+        this.log('warn', { captureFailed: ev.reason });
         this.abortIfOpen(); this.emit({ type: 'CloseCapture' }); ctx.mutedReason = 'permission'; this.enter('MUTED');
-        this.toast('Microphone permission needed for Steady — open System Settings › Privacy › Microphone', 'warn'); break;
+        this.toast(captureFailedMessage(ev.reason), 'warn'); break;
       case 'DeviceChanged':
         if (this.sessionOpen()) { this.abortStt(); this.error('Mic changed, say that again'); }
         else ctx.deviceSwapUntil = this.now + this.c.wake.skipAfterDeviceSwapMs / 1000;
