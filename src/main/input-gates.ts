@@ -14,7 +14,7 @@ export function readyForControl(status: ProbeStatus, canvasRequired: boolean): s
   if (!status.targetPid) return 'Open a disposable document in Krita, then recover the helper.';
   if (!status.native?.permissions.accessibility) return 'Accessibility permission is required.';
   if (status.native?.foregroundTarget !== 'org.krita') return 'Keep Krita in the foreground.';
-  if (canvasRequired && (!status.canvasConfirmed || !status.canvas)) return 'Set the canvas first: choose Detect canvas or Review suggested workspace on the panel.';
+  if (canvasRequired && (!status.canvasConfirmed || !status.canvas)) return 'Set the canvas first: choose Set canvas on the panel.';
   return null;
 }
 export function mappedSampleAllowed(value: unknown, position: unknown, status: ProbeStatus, now: number): value is TrackingSample {

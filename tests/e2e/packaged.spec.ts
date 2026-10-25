@@ -1,5 +1,6 @@
 import { test, expect, _electron } from '@playwright/test';
 import path from 'node:path';
+import { panelWindow } from './helpers';
 import { readdirSync, mkdtempSync } from 'node:fs';
 import os from 'node:os';
 test('packaged panel is sandboxed, local and nonactivating with bundled helper',async()=>{
@@ -7,13 +8,13 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
   const env=Object.fromEntries(Object.entries(process.env).filter((entry):entry is [string,string]=>entry[1]!==undefined));delete env.ELECTRON_RUN_AS_NODE;
   const app=await _electron.launch({executablePath:path.resolve('out/Steady-darwin-arm64/Steady.app/Contents/MacOS/Steady'),args:[`--user-data-dir=${mkdtempSync(path.join(os.tmpdir(),'steady-phase03-e2e-'))}`,'--test-fake-backend','--use-fake-device-for-media-stream=fps=30','--use-fake-ui-for-media-stream'],env,timeout:15000});
   try{
-    const page=await app.firstWindow();await expect(page.getByText('Statheros',{exact:true}).first()).toBeVisible();
+    const page=await panelWindow(app);await expect(page.getByText('Statheros',{exact:true}).first()).toBeVisible();
     // Main-inspector evaluation can pause Electron's monotonic RTT measurement.
     // Wait through native startup via renderer IPC before inspecting the main VM.
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).nativeClockReady),{timeout:5000}).toBe(true);
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).speechDiagnostics?.phase),{timeout:5000}).toBe('idle');
     const info=await app.evaluate(({BrowserWindow,app})=>{
-      const w=BrowserWindow.getAllWindows()[0]!;
+      const w=BrowserWindow.getAllWindows().find(win=>new URL(win.webContents.getURL()).searchParams.get('view')==='panel')!;
       return {packaged:app.isPackaged,size:w.getSize(),focusable:w.isFocusable(),alwaysOnTop:w.isAlwaysOnTop(),allSpaces:w.isVisibleOnAllWorkspaces(),url:w.webContents.getURL()};
     });
     expect(info).toMatchObject({packaged:true,size:[300,660],focusable:false,alwaysOnTop:true,allSpaces:true});
@@ -162,8 +163,10 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     await sample(inside,18);await page.evaluate(()=>window.steady.action('resume'));
     await page.evaluate(()=>window.steady.action('penDown'));
     expect((await page.evaluate(()=>window.steady.status())).native?.state).toBe('DRAWING');
+    expect((await page.evaluate(()=>window.steady.status())).penArmed).toBe(true);
     await sample(outside);current=await page.evaluate(()=>window.steady.status());expect(current.native?.state).toBe('HOVER');expect(current.native?.buttonDown).toBe(false);
-    await sample(inside);expect((await page.evaluate(()=>window.steady.status())).native?.buttonDown).toBe(false);
+    await sample(inside);await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).native?.buttonDown)).toBe(true);
+    await page.evaluate(()=>window.steady.action('penUp'));
     await page.evaluate(()=>window.steady.action('click'));
     for(const action of ['undo','redo','brush','toggleErase','bigger','smaller','swapColors'] as const)await page.evaluate(action=>window.steady.action(action),action);
     await page.evaluate(()=>window.steady.action('penDown'));
@@ -174,6 +177,7 @@ test('packaged panel is sandboxed, local and nonactivating with bundled helper',
     const pauseRect=await page.getByRole('button',{name:'Pause tracking',exact:true}).first().boundingBox();expect(pauseRect).not.toBeNull();
     await sample({x:panelPoint.x-10+pauseRect!.x+pauseRect!.width/2,y:panelPoint.y-10+pauseRect!.y+pauseRect!.height/2});
     await page.evaluate(()=>window.steady.action('click'));expect((await page.evaluate(()=>window.steady.status())).native?.state).toBe('PAUSED');
+    expect((await page.evaluate(()=>window.steady.status())).penArmed).toBe(false);
     await sample(inside,18);await page.evaluate(()=>window.steady.action('resume'));await page.evaluate(()=>window.steady.action('penDown'));
     // No more samples: the independent native watchdog must release by 300ms.
     await expect.poll(()=>page.evaluate(async()=>(await window.steady.status()).native?.buttonDown),{timeout:1000,intervals:[20]}).toBe(false);

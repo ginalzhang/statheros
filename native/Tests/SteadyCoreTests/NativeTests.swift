@@ -301,3 +301,20 @@ private func accepted(_ e:Envelope)->Bool{e.payload.object?["accepted"]?.bool==t
  #expect(h.sample(9,1530,point:Point(x:maximum.x,y:maximum.y.nextUp)).payload.object?["code"]?.string=="invalid-sample")
  #expect(h.backend.positions.count==positions);#expect(h.engine.snapshot.latestValidFrame==7)
 }
+
+@Test func previewCanOverlapCanvasButStillBlocksDrawingAndClicks() {
+ let h=Harness()
+ let canvas=Rect(x:-1000,y:100,width:500,height:500)
+ let panel=Rect(x:-400,y:100,width:200,height:500)
+ let preview=Rect(x:-900,y:300,width:100,height:100)
+ #expect(accepted(h.send("configure",["generation":.number(1),"targetBundleId":.string("org.krita"),"targetPid":.number(123),"displayId":.number(1),"canvas":.encoded(canvas),"excludedRects":.encoded([panel,preview])])))
+ h.ready();#expect(accepted(h.action(.penDown)))
+ h.sample(7,1510,point:Point(x:-850,y:350))
+ #expect(!h.engine.snapshot.buttonDown);#expect(h.engine.snapshot.state == .hover)
+ let events=h.backend.events
+ #expect(!accepted(h.action(.penDown,now:1510)))
+ #expect(!accepted(h.action(.click,now:1510)))
+ #expect(!h.backend.events.dropFirst(events.count).contains("down"))
+ h.sample(8,1520,point:Point(x:-800,y:200))
+ #expect(accepted(h.action(.penDown,now:1520)))
+}

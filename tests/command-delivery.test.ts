@@ -21,7 +21,8 @@ it('queues Krita shortcuts behind an in-flight configuration instead of discardi
   let finish!: () => void;
   const configuration = queue.run(async () => { await new Promise<void>(resolve => { finish = resolve; }); generation++; effects.push('configured'); });
   await Promise.resolve();
-  const undo = deliverCommand(queue, () => generation, 'undo', async () => { effects.push('undo'); });
-  finish(); await configuration; await undo;
-  expect(effects).toEqual(['configured', 'undo']);
+  const actions = ['undo', 'eraser', 'swapColors'] as const;
+  const pending = actions.map(action => deliverCommand(queue, () => generation, action, async () => { effects.push(action); }));
+  finish(); await configuration; await Promise.all(pending);
+  expect(effects).toEqual(['configured', ...actions]);
 });

@@ -12,7 +12,7 @@ export default {
     extendInfo: {
       LSMinimumSystemVersion: '26.0', LSUIElement: true,
       NSCameraUsageDescription: 'Steady uses your selected camera for local head or palm tracking.',
-      NSMicrophoneUsageDescription: 'Steady listens locally for its wake phrase and, only while the red dot shows, streams your spoken command to Cartesia for transcription.',
+      NSMicrophoneUsageDescription: 'When Voice Commands is enabled, Steady recognizes command words locally and streams other speech to Cartesia for transcription while the red cloud dot shows.',
       NSSpeechRecognitionUsageDescription: 'Steady recognizes local en-US drawing commands.',
       NSAccessibilityUsageDescription: 'Steady reads Krita window geometry and posts pointer and key events when explicitly enabled.'
     }

@@ -2,7 +2,7 @@ import type { LocalActionID } from '../shared/contracts';
 import type { ConfigurationQueue } from './configuration';
 
 /** Krita keyboard shortcuts: they don't depend on canvas/panel geometry, and native re-checks the foreground target live. */
-const SHORTCUTS: readonly LocalActionID[] = ['undo', 'redo', 'brush', 'toggleErase', 'bigger', 'smaller'];
+const SHORTCUTS: readonly LocalActionID[] = ['undo', 'redo', 'brush', 'toggleErase', 'bigger', 'smaller', 'eraser', 'swapColors'];
 
 /**
  * Bind pointer command intent to the configuration visible when it was received. Shortcuts instead wait for an

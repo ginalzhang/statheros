@@ -19,6 +19,9 @@ export class NativeSupervisor extends EventEmitter {
   constructor(readonly executable: string, readonly realInput: boolean, readonly testFakeBackend = false) { super(); }
   async start(): Promise<void> {
     const child = this.child = spawn(this.executable, this.realInput ? ['--real-input'] : this.testFakeBackend ? ['--test-fake-backend','--test-system-displays'] : [], { stdio: ['pipe','pipe','pipe'] });
+    // Writable emits its own error even when write's callback receives EPIPE.
+    // Keep this listener through shutdown so helper death cannot crash Electron.
+    child.stdin.on('error', error => this.fail(`Native helper pipe closed: ${error.message}`));
     const decoder = new LineDecoder();
     child.stdout.on('data', chunk => { try { for (const value of decoder.push(chunk)) this.receive(value); } catch (error) { this.fail(String(error)); } });
     const diagnostics=new SpeechDiagnosticDecoder();
@@ -52,14 +55,18 @@ export class NativeSupervisor extends EventEmitter {
     const seq = ++this.seq;
     const message = { v: 1, session: this.session, seq, type, payload };
     if (!validRequest(message)) return Promise.reject(new Error('Invalid outbound request'));
-    if (this.failed || !this.child || this.child.killed) return Promise.reject(new Error('Native helper unavailable'));
+    const child = this.child;
+    if (this.failed || !child || child.killed || child.stdin.destroyed || child.stdin.writableEnded ||
+      (this.stopping && type !== 'shutdown')) return Promise.reject(new Error('Native helper unavailable'));
     const configuration = type === 'configure';
     if (configuration) { this.configurationRequests++; this.sample = null; }
     if(type==='microphone'){const control=payload as RequestPayloads['microphone'];this.speechSession=control.enabled?control.speechSession:null;this.lastDiagnostic=-Infinity;}
     return new Promise<Ack>((resolve,reject) => {
       const timer = setTimeout(() => { this.pending.delete(seq); reject(new Error('Native acknowledgment timeout')); this.fail('Native acknowledgment timeout'); }, 500);
       this.pending.set(seq, { resolve, reject, timer });
-      this.child!.stdin.write(JSON.stringify(message)+'\n', error => { if (error) this.fail(error.message); });
+      try {
+        child.stdin.write(JSON.stringify(message)+'\n', error => { if (error) this.fail(`Native helper pipe closed: ${error.message}`); });
+      } catch (error) { this.fail(`Native helper pipe closed: ${error instanceof Error ? error.message : String(error)}`); }
     }).finally(() => { if (configuration) this.configurationRequests--; });
   }
   async synchronize(): Promise<void> {
@@ -104,7 +111,7 @@ export class NativeSupervisor extends EventEmitter {
     this.sample = null; this.clock.uncertainty = Infinity;
     if (this.refresh) clearInterval(this.refresh);
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error(message)); } this.pending.clear();
-    this.child?.stdin.end();
+    this.child?.stdin.destroy();
     this.emergencyRelease();
     this.emit('fault', message);
   }

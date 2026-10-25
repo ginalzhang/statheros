@@ -1,5 +1,6 @@
 import { test, expect, _electron, type ElectronApplication, type Page } from '@playwright/test';
 import path from 'node:path';
+import { panelWindow } from './helpers';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 
@@ -21,7 +22,7 @@ test('mouse setup works without calibration, validates preview, and ends paused'
   const app = await _electron.launch({ executablePath: path.resolve('out/Steady-darwin-arm64/Steady.app/Contents/MacOS/Steady'),
     args: [`--user-data-dir=${mkdtempSync(path.join(os.tmpdir(), 'steady-canvas-e2e-'))}`, '--test-fake-backend'], env, timeout: 15000 });
   try {
-    const panel = await app.firstWindow();
+    const panel = await panelWindow(app);
     await expect.poll(() => panel.evaluate(async () => (await window.steady.status()).nativeClockReady)).toBe(true);
     expect((await panel.evaluate(() => window.steady.status())).settings?.calibrations).toEqual([]);
     let overlay = await openSelector(app, panel);
@@ -77,7 +78,7 @@ test('Set canvas confirms detection, reviews suggestions, and falls back without
   const app = await _electron.launch({ executablePath: path.resolve('out/Steady-darwin-arm64/Steady.app/Contents/MacOS/Steady'),
     args: [`--user-data-dir=${mkdtempSync(path.join(os.tmpdir(), 'steady-set-canvas-e2e-'))}`, '--test-fake-backend'], env, timeout: 15000 });
   try {
-    const panel = await app.firstWindow();
+    const panel = await panelWindow(app);
     const status = () => panel.evaluate(() => window.steady.status());
     const overlays = () => app.windows().filter(page => !page.isClosed() && page.url().includes('view=canvas-overlay'));
     await expect.poll(async () => (await status()).nativeClockReady).toBe(true);
@@ -94,7 +95,7 @@ test('Set canvas confirms detection, reviews suggestions, and falls back without
           const observation = args[0];
           const area = { x: 100, y: 150, width: 300, height: 200 };
           args[0] = { ...observation, generation: observation.generation - (state.mode === 'stale' ? 1 : 0),
-            windowBounds: { x: 0, y: 0, width: 1512, height: 982 },
+            windowBounds: { x: 0, y: 0, width: 1512, height: 982 }, windowToken: 'controlled-document',
             rect: state.mode === 'direct' ? area : state.mode === 'invalid' ? state.bounds : null,
             kind: ['direct', 'invalid'].includes(state.mode) ? 'viewport' : null,
             availability: ['direct', 'invalid'].includes(state.mode) ? 'available' : 'unavailable',
