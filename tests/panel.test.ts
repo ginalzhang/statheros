@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { PANEL_WIDTH, PANEL_HEIGHT, PANEL_COLLAPSED_HEIGHT, canvasSelectionControlsFrame, panelPosition, preferredDisplay, sameCanvasSelectionDisplay } from '../src/main/panel';
+import { PANEL_WIDTH, PANEL_HEIGHT, PANEL_COLLAPSED_HEIGHT, SETTINGS_HEIGHT, SETTINGS_WIDTH, UTILITY_SIZE, canvasSelectionControlsFrame, panelPosition, preferredDisplay, sameCanvasSelectionDisplay, settingsFrame, toastPosition, utilityPosition } from '../src/main/panel';
 import type { DisplayInfo } from '../src/shared/contracts';
 const builtIn:DisplayInfo={id:1,bounds:{x:0,y:0,width:1512,height:982},workArea:{x:0,y:25,width:1512,height:920},builtIn:true,primary:true,scaleFactor:2};
 const external:DisplayInfo={id:2,bounds:{x:-1920,y:-200,width:1920,height:1080},workArea:{x:-1920,y:-176,width:1920,height:1016},builtIn:false,primary:false,scaleFactor:1};
@@ -36,4 +36,25 @@ it('preserves a selection frame through fullscreen work-area animation but not a
   expect(sameCanvasSelectionDisplay(builtIn, {...builtIn,scaleFactor:1})).toBe(false);
   expect(sameCanvasSelectionDisplay(builtIn,external)).toBe(false);
   expect(sameCanvasSelectionDisplay(builtIn,undefined)).toBe(false);
+});
+
+it('places the Camera Preview, settings modal and notifications at their Figma scene positions', () => {
+  const scene = { x: 0, y: 0, width: 1440, height: 900 };
+  expect(UTILITY_SIZE).toEqual({ preview: { width: 200, height: 180 } });
+  expect(utilityPosition('preview', scene)).toEqual({ x: 238, y: 632 });
+  expect(settingsFrame(scene)).toEqual({ x: 180, y: 100, width: SETTINGS_WIDTH, height: SETTINGS_HEIGHT });
+  expect(toastPosition(builtIn.workArea)).toEqual({ x: 14, y: 63 });
+  // Negative-origin work areas stay in logical points, and the preview does not overlap the default panel.
+  const preview = { ...utilityPosition('preview', external.workArea), ...UTILITY_SIZE.preview };
+  expect(preview.x).toBeGreaterThanOrEqual(external.workArea.x);
+  expect(preview.y + preview.height).toBeLessThanOrEqual(external.workArea.y + external.workArea.height);
+  const panel = { ...panelPosition(builtIn), width: PANEL_WIDTH, height: PANEL_HEIGHT };
+  const at = { ...utilityPosition('preview', builtIn.workArea), ...UTILITY_SIZE.preview };
+  expect(at.x + at.width <= panel.x || at.y >= panel.y + panel.height).toBe(true);
+});
+
+it('keeps the settings modal on screen when the work area is small', () => {
+  const small = { x: -500, y: -300, width: 700, height: 500 };
+  const frame = settingsFrame(small);
+  expect(frame).toEqual({ x: -500, y: -300, width: 700, height: 500 });
 });

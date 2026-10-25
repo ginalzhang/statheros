@@ -7,14 +7,14 @@ import { pathToFileURL } from 'node:url';
 import { NativeSupervisor } from './supervisor';
 import { emptySpeechDiagnostics, isSpeechDiagnosticError, SpeechDiagnosticRecorder } from './speech-diagnostics';
 import { LiveProbe } from './live-probe';
-import { PANEL_COLLAPSED_HEIGHT, PANEL_HEIGHT, PANEL_WIDTH, canvasSelectionControlsFrame, panelPosition, preferredDisplay, sameCanvasSelectionDisplay } from './panel';
+import { PANEL_COLLAPSED_HEIGHT, PANEL_HEIGHT, PANEL_WIDTH, SETTINGS_HEIGHT, SETTINGS_WIDTH, TOAST_HEIGHT, TOAST_WIDTH, UTILITY_SIZE, canvasSelectionControlsFrame, panelPosition, preferredDisplay, sameCanvasSelectionDisplay, settingsFrame, toastPosition, utilityPosition, type UtilityView } from './panel';
 import { CanvasCapture, containsPoint, fitWorkspaceSuggestion, intersects, validateCanvas } from './canvas';
 import { CanvasSetup, canvasIdentity, freshCanvasObservation, freshWorkspaceSuggestion, routeCanvasObservation, sameCanvasRect } from './canvas-setup';
 import { CanvasDiagnostics } from './canvas-diagnostics';
-import { GlobalBindingInstaller, defaultBindings, kritaProfile, isLocalAction, hitPanel, resolveBinding, validateBindings, validateProfile } from './commands';
+import { GlobalBindingInstaller, defaultBindings, kritaProfile, isLocalAction, hitSurfaces, resolveBinding, validateBindings, validateProfile } from './commands';
 import { freshPointer, mappedSampleAllowed, readyForControl } from './input-gates';
 import { resourcesRoot, verifyResources } from './resources';
-import { ACTIONS, type Ack, type ActionID, type LocalActionID, type Point, type DisplayInfo, type Mode, type ProbeStatus, type Rect, type TrackingSample, type CanvasObservation, type CanvasSelectionSession } from '../shared/contracts';
+import { ACTIONS, type Ack, type ActionID, type LocalActionID, type Point, type DisplayInfo, type Mode, type ProbeStatus, type Rect, type TrackingSample, type CanvasObservation, type CanvasSelectionSession, type ToastMessage } from '../shared/contracts';
 import { isObject, rect, uint, point, finite } from './protocol';
 import { isTrackingSample } from '../shared/tracking-validation';
 import { DisplayLayoutGuard } from './display-layout';
@@ -52,6 +52,16 @@ let panelGeometryEpoch = 0;
 let movingPanelProgrammatically = false;
 const bindingInstaller = new GlobalBindingInstaller(globalShortcut);
 let panel: BrowserWindow | null = null, settings: BrowserWindow | null = null, supervisor: NativeSupervisor | null = null;
+/** Figma (Statheros 2): the Camera Preview is its own movable window beside the compact panel. */
+const utilities: Record<UtilityView, BrowserWindow | null> = { preview: null };
+/** Advanced (developer) settings: the former settings page, kept for real input, canvas, bindings and diagnostics. */
+let advanced: BrowserWindow | null = null;
+/** Transient notifications. Click-through and never excluded, so showing one never changes input geometry. */
+let toastWindow: BrowserWindow | null = null;
+/** Panel plus the Camera Preview. The native helper excludes both from drawing input. */
+function overlaySurfaces(): BrowserWindow[] {
+  return [panel, utilities.preview].filter((win): win is BrowserWindow => Boolean(win && !win.isDestroyed()));
+}
 let voice: ElectronVoice | null = null;
 let quitting = false, generation = 1;
 let settingsStore: SettingsStore;
@@ -63,13 +73,15 @@ async function configureControl(setup = false): Promise<void> {
   if (!supervisor || status.selectedDisplayId === undefined || !status.targetPid) {
     await pause('Open Krita, then Recover native helper before configuring control.'); return;
   }
+  // Only the panel must stay off the canvas. The utilities float over it as in Figma; the
+  // helper still treats them as excluded, so a stroke that reaches one lifts the pen.
   const bounds = panel?.getBounds();
   if (canvas && bounds && intersects(canvas, bounds)) {
     invalidateCanvas('Panel overlaps the canvas. Move the panel, then select or detect the canvas again.');
     status.fault = canvasSetup.state.message;
   }
   await supervisor.request('configure', { generation, targetBundleId: 'org.krita', targetPid: status.targetPid,
-    displayId: status.selectedDisplayId, canvas: setup ? null : canvas, excludedRects: bounds ? [bounds] : [] });
+    displayId: status.selectedDisplayId, canvas: setup ? null : canvas, excludedRects: overlaySurfaces().map(win => win.getBounds()) });
   nativeConfiguredTarget = status.targetPid;
   if (!setup) await supervisor.request('action', { generation, eventId: randomUUID(), actionId: 'pause' });
   publish();
@@ -304,13 +316,14 @@ async function observeCanvas(observation: CanvasObservation, native: NativeSuper
 function installBindings(): void {
   status.bindingConflicts = bindingInstaller.install(status.bindings ?? defaultBindings(), action => {
     const resolved = resolveBinding(action, canvasCapture.active);
-    void enqueueAction(resolved).catch(error => fault(String(error)));
+    void userAction(resolved).catch(error => fault(String(error)));
   });
   publish();
 }
 
 let status: ProbeStatus = { native: null, displays: [], fault: null, collapsed: false, settingsOpen: false, generation, realInput, microphoneEnabled: false };
-let buttons: {actionId:LocalActionID;rect:Rect}[] = [];
+/** Tracked-click targets per overlay surface, keyed by webContents id, in window-local coordinates. */
+const surfaceButtons = new Map<number, {actionId:LocalActionID;rect:Rect}[]>();
 let speechSession: string | null = null;
 const speechSeen = new Set<string>();
 let shutdownStarted = false;
@@ -326,7 +339,7 @@ function releaseRealInput(): void { spawnSync(path.join(resourcesRoot(),'bin','S
 function publish(): void {
   if (canvasCapture.active) canvasSetup.legacy(true, canvasCapture.firstCorner, canvasCapture.message);
   status = {...status, generation, realInput, canvas, canvasSetup: structuredClone(canvasSetup.state), canvasDiagnostics: canvasDiagnostics.snapshot()};
-  for (const win of [panel,settings,selectionOverlay,canvasOutline]) if (win && !win.isDestroyed()) win.webContents.send('steady:status-changed', statusForWindow(win));
+  for (const win of [panel,settings,advanced,selectionOverlay,canvasOutline,utilities.preview]) if (win && !win.isDestroyed()) win.webContents.send('steady:status-changed', statusForWindow(win));
 }
 function statusForWindow(win: BrowserWindow): ProbeStatus {
   // Screen/AX geometry and Electron content bounds are logical points. macOS
@@ -420,9 +433,8 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
     }
     case 'click': {
       const position = freshPointer(pointer, generation, performance.now());
-      const bounds = panel?.getBounds();
-      if (position && bounds) {
-        const hit = hitPanel(position, bounds, buttons);
+      if (position) {
+        const hit = hitSurfaces(position, overlaySurfaces().map(win => ({ bounds: win.getBounds(), buttons: surfaceButtons.get(win.webContents.id) ?? [] })));
         if (hit.inside) {
           // End an active stroke before any local panel operation. Background consumes Click.
           await supervisor?.request('action', { generation, eventId: randomUUID(), actionId: 'penUp' });
@@ -448,7 +460,7 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
   status.fault = null; publish(); return ack;
 }
 async function collapsePanel(collapsed: boolean): Promise<void> {
-  status.collapsed = collapsed; panel?.setSize(PANEL_WIDTH, collapsed ? PANEL_COLLAPSED_HEIGHT : PANEL_HEIGHT, false); buttons = [];
+  status.collapsed = collapsed; panel?.setSize(PANEL_WIDTH, collapsed ? PANEL_COLLAPSED_HEIGHT : PANEL_HEIGHT, false); if (panel) surfaceButtons.delete(panel.webContents.id);
   // Native exclusion geometry changes are serialized and always leave input paused.
   await pause('Panel geometry changed; Resume when ready.');
   if (canvasCapture.active || selectionOverlay) invalidateCanvas();
@@ -470,7 +482,7 @@ async function interpretWithClaude(text: string): Promise<PlanStep[] | null> {
 }
 /** <<COMMAND_ENTRYPOINT>> for voice: runs the spoken plan through the shared dispatcher, resolving after the native acks. */
 async function executeVoiceCommand(command: CommandEvent): Promise<string | null> {
-  return dispatchVoiceCommand(command, enqueueAction, interpretWithClaude);
+  return dispatchVoiceCommand(command, userAction, interpretWithClaude);
 }
 function initialPanelPosition(): {x:number;y:number} {
   const display = screen.getAllDisplays().find(d=>d.internal) ?? screen.getPrimaryDisplay();
@@ -488,7 +500,8 @@ function updateDisplays(displays:DisplayInfo[],forcePosition=false):void {
   status.displays=displays;status.selectedDisplayId=selected?.id;
   if(selected&&!keepSelectionPosition&&(forcePosition||changed)){
     const position=panelPosition(selected);movingPanelProgrammatically=true;
-    try{knownPanelOrigin=position;panel?.setPosition(position.x,position.y,false);if(panel)knownPanelOrigin=panel.getBounds();}
+    try{knownPanelOrigin=position;panel?.setPosition(position.x,position.y,false);if(panel)knownPanelOrigin=panel.getBounds();
+      const at=utilityPosition('preview',selected.workArea);utilities.preview?.setPosition(at.x,at.y,false);}
     finally{movingPanelProgrammatically=false;}
   }
   publish();
@@ -512,13 +525,48 @@ async function openSettings(): Promise<void> {
   status.settingsOpen=true;publish();
   await pause('Settings opened; input paused');
   if (settings) { settings.show(); settings.focus(); return; }
-  settings = new BrowserWindow({ width:760,height:820,minWidth:600,minHeight:600,title:'Steady — Settings',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false} });
-  secureWindow(settings); status.settingsOpen=true; publish();
-  settings.on('closed',()=>{settings=null;status.settingsOpen=false;publish();});
+  // Figma Settings modal: floats over Krita without closing or replacing the compact panel.
+  const display = status.displays.find(item => item.id === status.selectedDisplayId);
+  const frame = display ? settingsFrame(display.workArea) : { width: SETTINGS_WIDTH, height: SETTINGS_HEIGHT };
+  settings = new BrowserWindow({ ...frame,resizable:false,frame:false,transparent:true,hasShadow:true,alwaysOnTop:true,skipTaskbar:true,title:'Statheros — Settings',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false} });
+  settings.setAlwaysOnTop(true,'floating'); secureWindow(settings); status.settingsOpen=true; publish();
+  settings.on('closed',()=>{settings=null;status.settingsOpen=Boolean(advanced);publish();});
   await loadView(settings,'settings');
 }
+async function openAdvanced(): Promise<void> {
+  if (selectionOverlay || canvasCapture.active) invalidateCanvas('Settings opened; canvas selection canceled.');
+  status.settingsOpen=true;publish();
+  await pause('Settings opened; input paused');
+  if (advanced) { advanced.show(); advanced.focus(); return; }
+  advanced = new BrowserWindow({ width:760,height:820,minWidth:600,minHeight:600,title:'Statheros — Advanced settings',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false} });
+  secureWindow(advanced);
+  advanced.on('closed',()=>{advanced=null;status.settingsOpen=Boolean(settings);publish();});
+  await loadView(advanced,'advanced');
+}
+type ToastKind = ToastMessage['kind'];
+/** Success toasts only for actions whose result the native bridge confirmed (it rejects otherwise). */
+const SUCCESS_TOASTS: Partial<Record<LocalActionID, ToastKind>> = { undo: 'undo', redo: 'redo', toggleErase: 'eraser', brush: 'pencil', pause: 'paused', resume: 'resumed' };
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+function showToast(kind: ToastKind, detail?: string): void {
+  const win = toastWindow, display = status.displays.find(item => item.id === status.selectedDisplayId);
+  if (!win || win.isDestroyed()) return;
+  if (display) { const at = toastPosition(display.workArea); win.setPosition(at.x, at.y, false); }
+  win.webContents.send('steady:toast', { kind, detail: detail ?? null, id: randomUUID() } satisfies ToastMessage);
+  win.showInactive();
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { if (!win.isDestroyed()) win.hide(); }, kind === 'failed' || kind === 'trackingLost' ? 3600 : 2200);
+}
+/** A command the user asked for (panel, settings, binding or voice): confirmed results and failures notify. */
+async function userAction(action: LocalActionID): Promise<Ack | null> {
+  try {
+    const ack = await enqueueAction(action);
+    const kind = SUCCESS_TOASTS[action];
+    if (kind) showToast(kind);
+    return ack;
+  } catch (error) { showToast('failed', error instanceof Error ? error.message : String(error)); throw error; }
+}
 function trusted(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): void {
-  if (![panel?.webContents,settings?.webContents].includes(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted IPC sender');
+  if (![panel?.webContents,settings?.webContents,advanced?.webContents,utilities.preview?.webContents].includes(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted IPC sender');
 }
 function installIPC(): void {
   const handle = (name:string,fn:(...args:any[])=>unknown) => ipcMain.handle(`steady:${name}`,(event,...args)=>{trusted(event);return fn(...args);});
@@ -534,8 +582,10 @@ function installIPC(): void {
   });
   handle('local-action',async(action:unknown)=>{
     if(!isLocalAction(action))throw new Error('Invalid local action');
-    try { await enqueueAction(action); } catch(error) { fault(String(error)); throw error; }
+    try { await userAction(action); } catch(error) { fault(String(error)); throw error; }
   });
+  handle('tracking-lost',()=>showToast('trackingLost'));
+  handle('open-advanced',()=>configuration.run(openAdvanced));
   handle('begin-canvas',()=>configuration.run(beginCanvas));
   handle('copy-canvas-diagnostics',()=>{
     const report = canvasDiagnostics.snapshot();
@@ -590,7 +640,7 @@ function installIPC(): void {
   }));
   handle('collapse',(collapsed:unknown)=>configuration.run(async()=>{if(typeof collapsed!=='boolean')throw new Error('Invalid collapse');await collapsePanel(collapsed);}));
   handle('open-settings',()=>configuration.run(openSettings));
-  handle('close-settings',()=>settings?.close());
+  handle('close-settings',()=>{settings?.close();advanced?.close();});
   handle('select-camera',(cameraId:unknown,mode:unknown)=>configuration.run(async()=>{
     if(typeof cameraId!=='string'||cameraId.length>1024||!['head','palm'].includes(mode as string))throw new Error('Invalid camera');
     await pause('Camera/mode changed; canvas confirmation required');generation++;
@@ -628,10 +678,10 @@ function installIPC(): void {
     settingsStore.save(savedSettings);status.settings=savedSettings;status.canvasConfirmed=false;
     invalidateCanvas();await configureControl();status.fault='Camera orientation changed; recalibrate';publish();
   }));
-  handle('panel-opacity',(opacity:unknown)=>{if(opacity!==1&&opacity!==0.7)throw new Error('Invalid opacity');panel?.setOpacity(opacity);status.panelOpacity=opacity;publish();});
+  handle('panel-opacity',(opacity:unknown)=>{if(opacity!==1&&opacity!==0.7)throw new Error('Invalid opacity');for(const win of overlaySurfaces())win.setOpacity(opacity);status.panelOpacity=opacity;publish();});
   handle('select-display',(displayId:unknown)=>configuration.run(async()=>{
     if(!uint(displayId)||!status.displays.some(display=>display.id===displayId))throw new Error('Unknown native display');
-    await pause('Selected display changed; canvas invalidated');generation++;status.selectedDisplayId=displayId;buttons=[];status.canvasConfirmed=false;invalidateCanvas();updateDisplays(status.displays,true); await configureControl();
+    await pause('Selected display changed; canvas invalidated');generation++;status.selectedDisplayId=displayId;surfaceButtons.clear();status.canvasConfirmed=false;invalidateCanvas();updateDisplays(status.displays,true); await configureControl();
   }));
   handle('microphone',async(enabled:unknown)=>{if(typeof enabled!=='boolean')throw new Error('Invalid microphone flag');await microphone(enabled);});
   handle('install-speech-assets',async()=>{throw new Error('Apple speech assets are not used; voice uses Cartesia.');});
@@ -655,7 +705,7 @@ function installIPC(): void {
     liveProbeLifecycle=new LiveProbe(child,releaseRealInput,message=>{if(liveProbe===child){liveProbe=null;liveProbeLifecycle=null;}fault(message);});
   });
   handle('quit',()=>app.quit());
-  ipcMain.on('steady:register-buttons',(event,value:unknown)=>{trusted(event);if(event.sender!==panel?.webContents||!Array.isArray(value)||value.length>100) return;buttons=value.filter(x=>isObject(x)&&isLocalAction(x.actionId)&&rect(x.rect)) as typeof buttons;});
+  ipcMain.on('steady:register-buttons',(event,value:unknown)=>{trusted(event);if(!overlaySurfaces().some(win=>win.webContents===event.sender)||!Array.isArray(value)||value.length>100) return;surfaceButtons.set(event.sender.id,value.filter(x=>isObject(x)&&isLocalAction(x.actionId)&&rect(x.rect)));});
   ipcMain.on('steady:sample',(event,sample:unknown)=>{
     trusted(event); if(event.sender!==panel?.webContents||!isObject(sample)||!uint(sample.generation)||!uint(sample.frameId)||!finite(sample.captureTimestamp)||typeof sample.valid!=='boolean'||!['head','palm'].includes(sample.mode as string)||(sample.valid?!point(sample.anchor):sample.anchor!==null)||typeof sample.qualityReason!=='string')return;
     if(sample.generation!==generation || (canvasSetup.state.mode === 'mouse' && canvasSetup.state.active))return;
@@ -693,6 +743,7 @@ async function startNative(): Promise<void> {
         releaseAfterCaptureMs:state.lastValidCaptureTimestamp==null?null:state.lastReleaseTimestamp-state.lastValidCaptureTimestamp,
         buttonDown:state.buttonDown,clockUncertaintyMs:next.clock.uncertainty});
     }
+    if(status.native && ['HOVER','DRAWING'].includes(status.native.state) && state.state!==status.native.state && state.reason==='stale-capture')showToast('trackingLost');
     status.native=state;if(state.reason==='microphone-enabled'&&speechSession!==null)status.microphoneEnabled=true;if(state.reason==='microphone-disabled')status.microphoneEnabled=false;if(state.reason==='speech-assets-ready')status.speechDiagnostics={...(status.speechDiagnostics??emptySpeechDiagnostics(speechSession)),assets:'ready'};publish();});
   next.on('fault',(message)=>{if(supervisor!==next)return;invalidateCanvas('Native helper unavailable; recover it and set the canvas again.');speechSession=null;status.microphoneEnabled=false;status.nativeClockReady=false;status.nativeFault=message;trackingEvidence('native-fault',{message});fault(message);});
   next.on('clock-ready',ready=>{if(supervisor!==next)return;status.nativeClockReady=ready;publish();});
@@ -759,7 +810,7 @@ async function main(): Promise<void> {
     const dev = !app.isPackaged && MAIN_WINDOW_VITE_DEV_SERVER_URL && url.origin===new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL).origin;
     callback({cancel:!(['file:','steady-resource:','data:','blob:','devtools:'].includes(url.protocol)||dev)});
   });
-  session.defaultSession.setPermissionRequestHandler((contents,permission,callback)=>callback([panel?.webContents,settings?.webContents].includes(contents)&&permission==='media'));
+  session.defaultSession.setPermissionRequestHandler((contents,permission,callback)=>callback([panel?.webContents,settings?.webContents,advanced?.webContents].includes(contents)&&permission==='media'));
   protocol.handle('steady-resource',request=>{
     if(!resourcesReady)return new Response('Local resource integrity check failed',{status:503});
     const url=new URL(request.url); const name=decodeURIComponent(url.pathname).replace(/^\/+/, '');
@@ -772,19 +823,42 @@ async function main(): Promise<void> {
   panel.setAlwaysOnTop(true,'floating'); panel.setVisibleOnAllWorkspaces(true,{visibleOnFullScreen:true}); secureWindow(panel);
   panel.on('close',()=>{if(!quitting)app.quit();});
   let panelGeometryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Moving any overlay surface changes the helper's excluded rectangles: pause now, reconfigure once it settles. */
+  const surfaceMoved=(name:string):void=>{
+    panelGeometryPending=true; const epoch=++panelGeometryEpoch;
+    clearTimeout(panelGeometryTimer);
+    void pause(`${name} moved; input paused.`);
+    panelGeometryTimer=setTimeout(()=>{void configuration.run(async()=>{
+      if(canvasCapture.active || selectionOverlay)invalidateCanvas(`${name} moved; select the canvas again.`);generation++;await configureControl();publish();
+    }).catch(error=>fault(String(error))).finally(()=>{if(epoch===panelGeometryEpoch)panelGeometryPending=false;});},100);
+  };
   knownPanelOrigin=panel.getBounds();
   panel.on('move',()=>{
     const bounds=panel?.getBounds();
     if(movingPanelProgrammatically){if(bounds)knownPanelOrigin=bounds;return;}
     if(!bounds || (knownPanelOrigin?.x===bounds.x && knownPanelOrigin?.y===bounds.y))return;
-    knownPanelOrigin=bounds; panelGeometryPending=true; const epoch=++panelGeometryEpoch;
-    clearTimeout(panelGeometryTimer);
-    void pause('Panel moved; input paused.');
-    panelGeometryTimer=setTimeout(()=>{void configuration.run(async()=>{
-      if(canvasCapture.active || selectionOverlay)invalidateCanvas('Panel moved; select the canvas again.');generation++;await configureControl();publish();
-    }).catch(error=>fault(String(error))).finally(()=>{if(epoch===panelGeometryEpoch)panelGeometryPending=false;});},100);
+    knownPanelOrigin=bounds; surfaceMoved('Panel');
   });
+  const createUtility=(view:UtilityView):BrowserWindow=>{
+    const display=screen.getAllDisplays().find(d=>d.internal)??screen.getPrimaryDisplay();
+    const win=new BrowserWindow({ ...utilityPosition(view,display.workArea),...UTILITY_SIZE[view],resizable:false,frame:false,transparent:true,hasShadow:true,show:false,type:'panel',focusable:false,alwaysOnTop:true,skipTaskbar:true,title:'Statheros — Camera Preview',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false} });
+    win.setAlwaysOnTop(true,'floating'); win.setVisibleOnAllWorkspaces(true,{visibleOnFullScreen:true}); secureWindow(win);
+    // Utilities live as long as the app; the panel's close button quits.
+    win.on('close',event=>{if(!quitting)event.preventDefault();});
+    win.on('closed',()=>{if(utilities[view]===win)utilities[view]=null;});
+    let known=win.getBounds();
+    win.on('move',()=>{
+      const bounds=win.getBounds(), unchanged=known.x===bounds.x&&known.y===bounds.y; known=bounds;
+      if(!movingPanelProgrammatically&&!unchanged)surfaceMoved('Camera preview');
+    });
+    utilities[view]=win; return win;
+  };
+  const preview=createUtility('preview');
+  toastWindow=new BrowserWindow({ width:TOAST_WIDTH,height:TOAST_HEIGHT,resizable:false,movable:false,frame:false,transparent:true,hasShadow:false,show:false,type:'panel',focusable:false,alwaysOnTop:true,skipTaskbar:true,title:'Statheros — Notification',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false,backgroundThrottling:false} });
+  toastWindow.setAlwaysOnTop(true,'floating'); toastWindow.setVisibleOnAllWorkspaces(true,{visibleOnFullScreen:true}); toastWindow.setIgnoreMouseEvents(true); secureWindow(toastWindow);
+  toastWindow.on('close',event=>{if(!quitting)event.preventDefault();});
   installIPC();await loadView(panel,'panel');panel.showInactive();
+  await Promise.all([loadView(preview,'preview'),loadView(toastWindow,'toast')]);preview.showInactive();
   voice=new ElectronVoice({buildDir:__dirname,voiceRoot:path.join(resourcesRoot(),'voice'),packaged:app.isPackaged,userData:app.getPath('userData'),
     panel:()=>panel,windows:()=>[panel,settings],execute:executeVoiceCommand,microphoneChanged:open=>{status.microphoneEnabled=open;publish();}});
   voice.start();
@@ -809,7 +883,7 @@ async function main(): Promise<void> {
     if (!layout.changed(screen.getAllDisplays())) return;
     void configuration.run(async()=>{
       await pause('Display geometry changed; canvas invalidated');
-      generation++;status.canvasConfirmed=false;buttons=[];
+      generation++;status.canvasConfirmed=false;surfaceButtons.clear();
       // Pause refreshes native metadata; ping returns its authoritative displays.
       await supervisor?.request('ping',{senderTimestamp:performance.now()});
       invalidateCanvas(); await configureControl();publish();

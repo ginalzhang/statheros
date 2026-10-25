@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { defaultBindings, hitPanel, kritaProfile, resolveBinding, validateBindings, validateProfile } from '../src/main/commands';
+import { defaultBindings, hitPanel, hitSurfaces, kritaProfile, resolveBinding, validateBindings, validateProfile } from '../src/main/commands';
 it('keeps fixed Krita shortcuts and sparse initial global bindings', () => {
   expect(kritaProfile().shortcuts).toEqual({undo:'Command+Z',redo:'Command+Shift+Z',brush:'B',toggleErase:'E',bigger:']',smaller:'['});
   expect(defaultBindings()).toEqual({penToggle:'F8',pause:'F9'});
@@ -12,6 +12,16 @@ it('routes panel semantic hits locally, consumes background, and distinguishes o
   expect(hitPanel({x:-220,y:-150},panel,buttons)).toEqual({inside:true,action:'openSettings'});
   expect(hitPanel({x:-300,y:0},panel,buttons)).toEqual({inside:true,action:null});
   expect(hitPanel({x:0,y:0},panel,buttons)).toEqual({inside:false,action:null});
+});
+it('routes tracked clicks to whichever separate overlay surface is under the pointer', () => {
+  const panel = { bounds: {x:1100,y:30,width:300,height:660}, buttons: [{actionId:'pause' as const,rect:{x:16,y:600,width:130,height:30}}] };
+  const toolbar = { bounds: {x:450,y:800,width:386,height:36}, buttons: [{actionId:'undo' as const,rect:{x:250,y:1,width:30,height:34}}] };
+  const preview = { bounds: {x:240,y:630,width:200,height:180}, buttons: [] };
+  const surfaces = [panel, preview, toolbar];
+  expect(hitSurfaces({x:710,y:815},surfaces)).toEqual({inside:true,action:'undo'});
+  expect(hitSurfaces({x:1130,y:640},surfaces)).toEqual({inside:true,action:'pause'});
+  expect(hitSurfaces({x:300,y:700},surfaces)).toEqual({inside:true,action:null});
+  expect(hitSurfaces({x:700,y:400},surfaces)).toEqual({inside:false,action:null});
 });
 it('rejects duplicate/unknown bindings and validates generic profile configuration', () => {
   expect(() => validateBindings({pause:'F8',penToggle:'f8'})).toThrow('Duplicate');
