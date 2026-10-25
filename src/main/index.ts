@@ -11,6 +11,7 @@ import { PANEL_COLLAPSED_HEIGHT, PANEL_HEIGHT, PANEL_WIDTH, SETTINGS_HEIGHT, SET
 import { CanvasCapture, containsPoint, fitWorkspaceSuggestion, intersects, validateCanvas } from './canvas';
 import { CanvasSetup, canvasIdentity, freshCanvasObservation, freshWorkspaceSuggestion, rememberedCanvasMatches, routeCanvasObservation, sameCanvasRect } from './canvas-setup';
 import { CanvasDiagnostics } from './canvas-diagnostics';
+import { CanvasSetRequest } from './canvas-set-request';
 import { GlobalBindingInstaller, defaultBindings, kritaProfile, isLocalAction, hitSurfaces, resolveBinding, validateBindings, validateProfile } from './commands';
 import { freshPointer, mappedSampleAllowed, readyForControl } from './input-gates';
 import { resourcesRoot, verifyResources } from './resources';
@@ -41,6 +42,7 @@ let realInput = false;
 const testFakeBackend = process.argv.includes('--test-fake-backend');
 const canvasCapture = new CanvasCapture();
 const canvasSetup = new CanvasSetup();
+const canvasSetRequest = new CanvasSetRequest();
 const canvasDiagnostics = new CanvasDiagnostics();
 let selectionOverlay: BrowserWindow | null = null, canvasOutline: BrowserWindow | null = null;
 let latestCanvasObservation: CanvasObservation | null = null;
@@ -95,10 +97,12 @@ function closeCanvasWindows(): void {
   overlay?.destroy(); outline?.destroy();
 }
 function invalidateCanvas(message = 'Canvas confirmation required. Select or detect the drawing area again.'): void {
+  canvasSetRequest.cancel();
   canvas = null; canvasCapture.cancel(); pointer = null; status.canvasConfirmed = false;
   closeCanvasWindows(); canvasSetup.invalidate(message);
 }
 async function beginLegacyCanvas(): Promise<void> {
+  cancelPendingCanvasSet('Tracked canvas setup requested.');
   if(panelGeometryPending)throw new Error('Wait for panel geometry to settle, then Set canvas again.');
   await pause('Canvas setup requested; pen up.');
   // Refresh target identity/foreground metadata before using UI prerequisites.
@@ -136,12 +140,51 @@ async function canvasPrerequisites(): Promise<void> {
   selectedDisplay();
 }
 async function beginCanvas(): Promise<void> {
+  cancelPendingCanvasSet('Canvas detection requested.');
   await pause('Canvas detection requested; input stays paused.');
   await canvasPrerequisites(); invalidateCanvas(); canvasSetup.detect();
   latestCanvasObservation = null; latestCanvasReceivedAt = -Infinity;
   generation++; await configureControl(); status.fault = null; publish();
 }
+function cancelPendingCanvasSet(message: string): void {
+  if (!canvasSetRequest.current) return;
+  canvasSetRequest.cancel();
+  canvasSetup.invalidate(message);
+  canvasSetup.preference = 'manual';
+  status.fault = message;
+}
+async function setCanvas(): Promise<void> {
+  if (canvasSetRequest.current) return;
+  await beginCanvas();
+  // Configuration may have failed or lost foreground while awaiting native ACKs.
+  await canvasPrerequisites();
+  canvasSetRequest.start({ generation, targetPid: status.targetPid!, displayId: selectedDisplay().id }, request => {
+    void configuration.run(async () => {
+      publish(); // Reconcile configuration/focus changes before a queued timeout acts.
+      if (!canvasSetRequest.consume(request)) return;
+      await openCanvasSetSelection(false, `No usable canvas was detected within 10 seconds. ${canvasSetup.state.detection.reason}`);
+    }).catch(error => fault(String(error)));
+  });
+  canvasSetup.state.active = true;
+  canvasSetup.state.message = 'Detecting canvas. A suggested workspace will open for review; otherwise mouse selection opens after 10 seconds.';
+  publish();
+}
+async function openCanvasSetSelection(review: boolean, explanation?: string): Promise<void> {
+  try {
+    if (review) await reviewWorkspace();
+    else await selectCanvas();
+    if (explanation) {
+      canvasSetup.state.message = `${explanation} Drag a rectangle around the drawing area, then choose Use canvas.`;
+      publish();
+    }
+  } catch (error) {
+    invalidateCanvas(`Canvas setup could not continue: ${String(error)}`);
+    canvasSetup.preference = 'manual';
+    fault(canvasSetup.state.message);
+  }
+}
 async function selectCanvas(initialSelection: Rect | null = null, reviewObservation: CanvasObservation | null = null): Promise<void> {
+  cancelPendingCanvasSet('Mouse canvas selection requested.');
   await pause('Mouse canvas selection requested; pen up.');
   await canvasPrerequisites();
   if (reviewObservation && (reviewObservation !== latestCanvasObservation || !freshWorkspaceSuggestion(reviewObservation, generation, status.targetPid, latestCanvasReceivedAt, performance.now()))) {
@@ -173,6 +216,7 @@ async function selectCanvas(initialSelection: Rect | null = null, reviewObservat
   canvasSetup.beginMouse(session.sessionId, generation, display.id, pid, identity, seed, seedAdjusted, controlsBounds);
   if (baseline) canvasSetup.bindObservation(baseline);
   await configureControl();
+  await canvasPrerequisites();
   selectionSession(session);
   if (status.native?.buttonDown || status.nativeFault) throw new Error('Input could not be released. Recover the helper before selecting.');
   const overlay = new BrowserWindow({ ...display.bounds, frame: false, transparent: true, backgroundColor: '#00000000',
@@ -290,6 +334,7 @@ async function observeCanvas(observation: CanvasObservation, native: NativeSuper
   try { nativeNow = native.clock.convert(performance.now(), performance.now()); } catch { return; }
   if (!freshCanvasObservation(observation, generation, status.targetPid, nativeNow, latestCanvasObservation?.observedAt ?? -Infinity, native.clock.uncertainty)) return;
   latestCanvasObservation = observation; latestCanvasReceivedAt = performance.now(); canvasSetup.observation(observation); canvasDiagnostics.observe(observation);
+  if (canvasSetRequest.current) canvasSetup.state.message = `${observation.reason} Waiting for a usable result; mouse selection opens after 10 seconds if needed.`;
   const identity = canvasIdentity(observation);
   if (!canvas && !canvasSetup.state.active && !selectionOverlay && !status.settingsOpen && !panelGeometryPending && fixedKritaProfile() && status.native?.foregroundTarget === 'org.krita'
     && rememberedCanvasMatches(savedSettings.rememberedCanvas, observation, status.selectedDisplayId)) { await restoreRememberedCanvas(observation, identity); return; }
@@ -319,6 +364,10 @@ async function observeCanvas(observation: CanvasObservation, native: NativeSuper
     publish(); return;
   }
   if (observation.availability !== 'available' || !observation.rect || !observation.kind) {
+    const request = canvasSetRequest.current;
+    if (request && freshWorkspaceSuggestion(observation, generation, status.targetPid, latestCanvasReceivedAt, performance.now()) && canvasSetRequest.consume(request)) {
+      await openCanvasSetSelection(true); return;
+    }
     if (canvas) {
       const reason = `${observation.reason} Select with mouse to continue.`;
       canvasDiagnostics.invalidated(reason, ['viewport-unavailable'], canvasSetup.diagnosticBaseline, observation);
@@ -331,10 +380,16 @@ async function observeCanvas(observation: CanvasObservation, native: NativeSuper
   try { detected = validateCanvas(observation.rect, { x: observation.rect.x + observation.rect.width, y: observation.rect.y + observation.rect.height }, display.bounds, bounds ? [bounds] : []); }
   catch (error) {
     canvasSetup.state.detection = { availability: 'unavailable', reason: String(error) };
+    const request = canvasSetRequest.current;
+    if (request && canvasSetRequest.consume(request)) {
+      await openCanvasSetSelection(false, `Detected bounds could not be used: ${String(error)}.`); return;
+    }
     if (canvas) { invalidateCanvas(String(error)); await pause(String(error)); generation++; await configureControl(); }
     canvasSetup.state.message = `${String(error)} Select with mouse, or move the panel and detect again.`; publish(); return;
   }
   if (canvas && sameCanvasRect(canvas, detected) && !canvasSetup.geometryChanged(observation) && canvasSetup.state.source === observation.kind) { canvasSetup.bindObservation(observation); publish(); return; }
+  canvasSetRequest.cancel(); // A valid detection completes Set canvas without opening review.
+  canvasSetup.state.active = false;
   await pause('Krita drawing area changed; input stays paused.');
   closeCanvasWindows(); canvas = detected; status.canvasConfirmed = false; generation++;
   try {
@@ -400,6 +455,10 @@ function trackingEvidence(type: string, data: unknown): void {
 function stopLiveProbe(): void { liveProbeLifecycle?.cancel(); }
 function releaseRealInput(): void { spawnSync(path.join(resourcesRoot(),'bin','SteadyNative'),['--release-and-exit',testFakeBackend?'--test-fake-backend':'--real-input'],{stdio:'ignore',timeout:1000}); }
 function publish(): void {
+  if (canvasSetRequest.current && (!canvasSetRequest.matches({ generation, targetPid: status.targetPid ?? 0, displayId: status.selectedDisplayId ?? -1 }) ||
+    status.settingsOpen || panelGeometryPending || status.nativeFault || status.native?.foregroundTarget !== 'org.krita')) {
+    cancelPendingCanvasSet('Canvas setup canceled because the configuration or foreground app changed. Return to Krita and choose Set canvas again.');
+  }
   if (canvasCapture.active) canvasSetup.legacy(true, canvasCapture.firstCorner, canvasCapture.message);
   status = {...status, generation, realInput, canvas, canvasSetup: structuredClone(canvasSetup.state), canvasDiagnostics: canvasDiagnostics.snapshot()};
   for (const win of [panel,settings,advanced,selectionOverlay,canvasOutline,utilities.preview]) if (win && !win.isDestroyed()) win.webContents.send('steady:status-changed', statusForWindow(win));
@@ -451,6 +510,7 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
     case 'togglePanel': await collapsePanel(!status.collapsed); return null;
     case 'quit': app.quit(); return null;
     case 'recover': await recoverNative(); return null;
+    case 'setCanvas': await setCanvas(); return null;
     case 'beginCanvas': await beginCanvas(); return null;
     case 'selectCanvas': await selectCanvas(); return null;
     case 'reviewWorkspace': await reviewWorkspace(); return null;
@@ -461,10 +521,11 @@ async function dispatch(actionId: LocalActionID, eventId: string = randomUUID())
       invalidateCanvas(); await pause('Recenter: capture a new neutral position; input remains paused');
       panel?.webContents.send('steady:recenter'); publish(); return null;
     case 'pause':
-      if ((canvasSetup.state.mode === 'mouse' && canvasSetup.state.active) || canvasCapture.active) {
+      if (canvasSetRequest.current || (canvasSetup.state.mode === 'mouse' && canvasSetup.state.active) || canvasCapture.active) {
         const sessionId = canvasSetup.state.sessionId ?? undefined;
         // Release immediately; serialize setup cancellation behind configuration
         // already in flight rather than racing its generation changes.
+        cancelPendingCanvasSet('Canvas setup canceled; input stays paused.');
         await pause('Paused');
         void configuration.run(() => cancelCanvas(sessionId)).catch(error => fault(String(error)));
         return null;
@@ -644,7 +705,7 @@ async function loadView(win: BrowserWindow, view: string): Promise<void> {
   else await win.loadFile(path.join(__dirname,`../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),{query:{view}});
 }
 async function openSettings(): Promise<void> {
-  if (selectionOverlay || canvasCapture.active) invalidateCanvas('Settings opened; canvas selection canceled.');
+  if (canvasSetRequest.current || selectionOverlay || canvasCapture.active) invalidateCanvas('Settings opened; canvas selection canceled.');
   status.settingsOpen=true;publish();
   await pause('Settings opened; input paused');
   if (settings) { settings.show(); settings.focus(); return; }
@@ -1040,6 +1101,7 @@ async function main(): Promise<void> {
   publish();
 }
 app.on('before-quit',event=>{
+  canvasSetRequest.cancel();
   if(shutdownStarted)return;event.preventDefault();shutdownStarted=true;quitting=true;bindingInstaller.clear();
   stopLiveProbe();
   void Promise.allSettled([voice?.stop(),supervisor?.stop()]).finally(()=>app.quit());

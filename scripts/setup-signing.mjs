@@ -6,7 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { SIGNING_IDENTITY, signingIdentity } from './signing-identity.mjs';
 
-if (signingIdentity() === SIGNING_IDENTITY) { console.log(`"${SIGNING_IDENTITY}" already installed`); process.exit(0); }
+if (signingIdentity() !== '-') { console.log(`"${SIGNING_IDENTITY}" already installed`); process.exit(0); }
 
 const run = (command, args) => {
   const result = spawnSync(command, args, { stdio: ['inherit', 'inherit', 'inherit'] });
@@ -32,5 +32,5 @@ try {
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
-if (signingIdentity() !== SIGNING_IDENTITY) throw new Error(`"${SIGNING_IDENTITY}" is not a valid code-signing identity after setup`);
+if (signingIdentity() === '-') throw new Error(`"${SIGNING_IDENTITY}" is not a valid code-signing identity after setup`);
 console.log(`Installed "${SIGNING_IDENTITY}". Rebuild, then grant Microphone and Accessibility once more; later rebuilds keep them.`);
