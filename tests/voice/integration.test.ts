@@ -141,6 +141,18 @@ describe.skipIf(!ready)('voice integration (real wake + VAD, fake Cartesia)', ()
     expect(result.wakes).toBe(1);
     expect(result.commands).toEqual([]);
   }, 30_000);
+  it('mention_brush_no_wake → the spotted command runs locally, nothing sent to Cartesia', async () => {
+    const result = await run('mention_brush_no_wake.wav', { finalAfterAudioS: 99, transcript: 'never' }, 2);
+    expect(result.commands.map(command => [command.text, command.source])).toEqual([['brush', 'local']]);
+    expect(result.wakes).toBe(0);
+    expect(result.server.audioBytes).toBe(0);
+  }, 30_000);
+  it('conversation_no_command → no command, no wake, nothing sent', async () => {
+    const result = await run('conversation_no_command.wav', { finalAfterAudioS: 99, transcript: 'never' }, 2);
+    expect(result.commands).toEqual([]);
+    expect(result.wakes).toBe(0);
+    expect(result.server.audioBytes).toBe(0);
+  }, 30_000);
   it('401 on connect → key toast at startup, wake does not connect, no retry loop', async () => {
     const result = await run('wake_plus_command_one_breath.wav', { finalAfterAudioS: 1, transcript: 'pen down', reject: 401 }, 2);
     expect(result.toasts).toContain('Cartesia key rejected — check CARTESIA_API_KEY');

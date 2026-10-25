@@ -26,7 +26,7 @@ export interface VoiceHost {
 
 export type { VoiceSnapshot } from '../../shared/voice';
 
-export interface UtteranceLatency { wakeToFirstByteMs: number | null; speechEndToFinalMs: number | null; finalToDispatchMs: number | null; source: 'wake' | 'ptt' }
+export interface UtteranceLatency { wakeToFirstByteMs: number | null; speechEndToFinalMs: number | null; finalToDispatchMs: number | null; source: 'wake' | 'ptt' | 'local' }
 
 export interface RuntimeOptions {
   apiKey: string | null;
@@ -164,7 +164,8 @@ export class VoiceRuntime {
       this.post(result.vadEvent);
     }
     if (result.wake) this.post({ type: 'WakeDetected', phrase: result.wake.phrase, ts: result.wake.ts, score: null });
-    else if (!result.vadEvent && this.ui.levelDbfs !== null) this.publishThrottled();
+    if (result.command) this.post({ type: 'LocalCommand', text: result.command.text, ts: result.command.ts });
+    if (!result.wake && !result.command && !result.vadEvent && this.ui.levelDbfs !== null) this.publishThrottled();
   }
 
   snapshot(): VoiceSnapshot {

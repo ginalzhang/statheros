@@ -158,6 +158,8 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
   const tracking: [string, string] = !native ? ['Connecting', 'muted'] : native === 'FAULT' ? ['Unavailable', 'bad'] : native === 'PAUSED' ? ['Paused', 'good strong'] : native === 'SETUP' ? ['Setting canvas', 'cyan'] : !probe.running ? ['No camera', 'bad']
     : probe.confirmationRequired ? ['Hand lost', 'bad'] : probe.rejection ? [palm ? 'No hand' : 'No face', 'muted'] : ['Active', 'good'];
   const paused = !native || native === 'PAUSED' || native === 'FAULT';
+  // Quick pause/resume beside the tracking status and in the (collapsible) header; Resume still needs its usual prerequisites.
+  const trackingToggle: { id: 'pause' | 'resume'; label: string } | null = native === 'PAUSED' ? { id: 'resume', label: 'Resume' } : native === 'HOVER' || native === 'DRAWING' ? { id: 'pause', label: 'Pause' } : null;
   const preset = activePreset(calibration);
   const chips = useRef<HTMLDivElement | null>(null);
   const [scroll, setScroll] = useState({ left: 0, width: 1 });
@@ -167,6 +169,7 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
     <header className="panel-header">
       <BunnyMark size={22} />
       <strong>Statheros</strong>
+      {trackingToggle && <button className="icon" data-action={trackingToggle.id} onClick={() => action(trackingToggle.id)} aria-label={`${trackingToggle.label} tracking`} title={`${trackingToggle.label} tracking`}><Icon name={trackingToggle.id === 'resume' ? 'resumeTracking' : 'pauseTracking'} size={18} /></button>}
       {!status.collapsed && <button className="icon" data-action="openSettings" onClick={() => action('openSettings')} aria-label="Open settings" title="Settings"><Icon name="gear" size={18} /></button>}
       <button className="icon" data-action="togglePanel" onClick={() => action('togglePanel')} aria-label={status.collapsed ? 'Expand panel' : 'Collapse panel'} title={status.collapsed ? 'Expand' : 'Minimize'}><Icon name={status.collapsed ? 'chevronDown' : 'chevronUp'} size={16} /></button>
       {!status.collapsed && <button className="icon" data-action="quit" onClick={() => action('quit')} aria-label="Quit Steady" title="Quit"><Icon name="close" size={16} /></button>}
@@ -174,7 +177,10 @@ function Panel({ status, probe, setup, feedback, action, previewRef, voice, tune
     <div className="panel-content" hidden={status.collapsed}>
       <section className="panel-section" aria-labelledby="tracking-title">
         <h2 id="tracking-title">Tracking</h2>
-        <div className="row"><span>{palm ? 'Hand Tracking' : 'Head Tracking'}</span><span className={`value ${tracking[1]}`} role="status">{tracking[0]}</span></div>
+        <div className="row"><span>{palm ? 'Hand Tracking' : 'Head Tracking'}</span>
+          <span className="row-actions"><span className={`value ${tracking[1]}`} role="status">{tracking[0]}</span>
+            {trackingToggle && <button className="link" data-action={trackingToggle.id} onClick={() => action(trackingToggle.id)} aria-label={`${trackingToggle.label} tracking`}>{trackingToggle.label}</button>}</span>
+        </div>
         <div className="row"><span>Camera</span><span className={`value ${probe.running ? 'good' : 'muted'}`}>{probe.running ? 'Connected' : 'Off'}</span></div>
         <div className="row"><span>Canvas</span>
           {status.canvasSetup?.active

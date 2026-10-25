@@ -1,4 +1,5 @@
-import workletUrl from './voice-worklet.js?url';
+// no-inline: an inlined data: URL is blocked by the panel CSP (script-src 'self').
+import workletUrl from './voice-worklet.js?url&no-inline';
 
 /**
  * Dumb capture + earcon output (prompt §2 Electron topology). The main process owns the ring buffer,

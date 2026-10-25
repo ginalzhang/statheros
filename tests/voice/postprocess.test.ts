@@ -52,7 +52,7 @@ describe('§9.3–5 classification', () => {
 describe('derived configuration', () => {
   it('derives stt_final, the ring size and keyterms', () => {
     expect(sttFinalSeconds(config)).toBeCloseTo(1.9);
-    expect(ringFrames(config)).toBe(63);
+    expect(ringFrames(config)).toBe(75);
     expect(effectiveKeyterms(config)[0]).toBe('Cartesia');
   });
 });

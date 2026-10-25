@@ -4,7 +4,7 @@
  */
 export type IconName =
   | 'penUp' | 'penDown' | 'latch' | 'pauseTracking' | 'recenter' | 'steadiness' | 'micOff' | 'micOn' | 'calibrate'
-  | 'cursor' | 'eraser' | 'undo' | 'redo' | 'brush' | 'bigger' | 'smaller' | 'sparkle' | 'gear' | 'chevronDown' | 'chevronUp' | 'close' | 'corner';
+  | 'cursor' | 'eraser' | 'undo' | 'redo' | 'brush' | 'bigger' | 'smaller' | 'sparkle' | 'gear' | 'chevronDown' | 'chevronUp' | 'close' | 'corner' | 'resumeTracking';
 
 const NIB = 'M11.5 4.8 L17.3 10.2 L11.3 16 C9.5 17.7 6.6 17.1 5.8 15 C5.3 13.6 5.7 11.9 6.7 10.5 Z';
 const glyphs: Record<IconName, React.JSX.Element> = {
@@ -30,6 +30,7 @@ const glyphs: Record<IconName, React.JSX.Element> = {
   chevronDown: <path d="M7 10 L12 15 L17 10" />,
   chevronUp: <path d="M7 14 L12 9 L17 14" />,
   close: <path d="M7 7 L17 17 M17 7 L7 17" />,
+  resumeTracking: <path d="M8 5.5 V18.5 L18.5 12 Z" />,
   corner: <><path d="M5 10 V5 H10" /><path d="M14 19 H19 V14" /><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" /></>,
 };
 

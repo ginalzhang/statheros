@@ -45,6 +45,7 @@ class Step {
     const ctx = this.ctx;
     switch (ev.type) {
       case 'WakeDetected': this.wakeDetected(ev.phrase, ev.ts); break;
+      case 'LocalCommand': this.localCommand(ev.text, ev.ts); break;
       case 'VadSpeechStart': this.vadStart(); break;
       case 'VadSpeechEnd': this.vadEnd(ev.ts, ev.speechMs); break;
       case 'HotkeyDown': this.hotkeyDown(ev.ts); break;
@@ -252,8 +253,11 @@ class Step {
   }
   /** (d) command. */
   private command(text: string, kind: 'command' | 'dictation', confidence: Confidence): void {
+    if (!this.ctx.closeSent) this.sendClose();
+    this.dispatchCommand(text, kind, confidence);
+  }
+  private dispatchCommand(text: string, kind: 'command' | 'dictation', confidence: Confidence): void {
     const ctx = this.ctx;
-    if (!ctx.closeSent) this.sendClose();
     this.emit({ type: 'ShowTranscript', text, final: true });
     if (ctx.inFlightCmd !== null) this.abortPath(null, 'Will run after the current command');
     const cmdId = ++ctx.cmdCounter;
@@ -266,6 +270,23 @@ class Step {
     this.cancelTimer('watchdog');
     this.enter('EXECUTING');
     this.setTimer('executing_spinner', this.c.timers.spinnerDelayMs / 1000);
+  }
+
+  /**
+   * On-device command keyword: runs straight away while voice is on, no wake phrase and no audio leaves the Mac.
+   * An open cloud session owns the utterance (its transcript carries the same words), so it is ignored there.
+   */
+  private localCommand(text: string, ts: number): void {
+    const ctx = this.ctx;
+    if (ctx.state === 'MUTED' || ctx.state === 'DISABLED') return;
+    if (SESSION_STATES.includes(ctx.state)) return this.log('debug', { localCommand: 'ignored during a cloud session' });
+    if (ts <= ctx.wakeGatedUntil || ts < ctx.deviceSwapUntil) return this.log('info', { localCommand: 'gated' });
+    const last = ctx.lastLocalCommand;
+    if (last && last.text === text && ts - last.ts < this.c.wake.refractoryS) return this.log('info', { localCommand: 'refractory' });
+    ctx.lastLocalCommand = { text, ts };
+    ctx.source = 'local'; ctx.detectionTs = null; ctx.tSpeechEnd = null;
+    this.log('info', { localCommand: text });
+    this.dispatchCommand(text, 'command', 'high');
   }
 
   // ───────────────────────── wake (§5.2) ─────────────────────────

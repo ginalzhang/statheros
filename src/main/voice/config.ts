@@ -33,7 +33,9 @@ export const defaultVoiceConfig = (): VoiceConfig => ({
   dispatchLowConfidence: 'ptt_only',
   audio: { frameQueueMax: 25 },
   wake: {
-    phrase: 'hey cartesia', keywordsFile: 'keywords.txt', refractoryS: 1.0, prerollMs: 500, playbackGateTailMs: 200,
+    phrase: 'hey cartesia', keywordsFile: 'keywords.txt', refractoryS: 1.0,
+    // Keyword spotting fires up to ~1 s after the phrase ends; in one breath the command is already spoken by then.
+    prerollMs: 1500, playbackGateTailMs: 200,
     gateCapS: { earcon: 1, tts: 30 }, skipAfterDeviceSwapMs: 500, localStopKeyword: true, remnantAliases: [],
     requireAttention: false, attentionWindowMs: 1500,
   },
