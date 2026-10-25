@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { NativeSupervisor } from './supervisor';
 import { emptySpeechDiagnostics, isSpeechDiagnosticError, SpeechDiagnosticRecorder } from './speech-diagnostics';
 import { LiveProbe } from './live-probe';
-import { PANEL_COLLAPSED_HEIGHT, PANEL_HEIGHT, PANEL_WIDTH, SETTINGS_HEIGHT, SETTINGS_WIDTH, TOAST_HEIGHT, TOAST_WIDTH, UTILITY_SIZE, canvasSelectionControlsFrame, panelPosition, preferredDisplay, sameCanvasSelectionDisplay, settingsFrame, toastPosition, utilityPosition, type UtilityView } from './panel';
+import { PANEL_COLLAPSED_HEIGHT, PANEL_HEIGHT, PANEL_WIDTH, SETTINGS_HEIGHT, SETTINGS_WIDTH, TOAST_HEIGHT, TOAST_WIDTH, UTILITY_SIZE, canvasSelectionControlsFrame, panelPosition, preferredDisplay, sameCanvasSelectionDisplay, previewClearOf, settingsFrame, toastPosition, utilityPosition, type UtilityView } from './panel';
 import { CanvasCapture, containsPoint, fitWorkspaceSuggestion, intersects, validateCanvas } from './canvas';
 import { CanvasSetup, canvasIdentity, freshCanvasObservation, freshWorkspaceSuggestion, routeCanvasObservation, sameCanvasRect } from './canvas-setup';
 import { CanvasDiagnostics } from './canvas-diagnostics';
@@ -47,6 +47,7 @@ let canvas: Rect | null = null;
 let pointer: { position: Point; timestamp: number; generation: number } | null = null;
 let nativeConfiguredTarget: number | null = null;
 let knownPanelOrigin: Point | null = null;
+let knownPreviewOrigin: Point | null = null;
 let panelGeometryPending = false;
 let panelGeometryEpoch = 0;
 let movingPanelProgrammatically = false;
@@ -73,9 +74,23 @@ async function configureControl(setup = false): Promise<void> {
   if (!supervisor || status.selectedDisplayId === undefined || !status.targetPid) {
     await pause('Open Krita, then Recover native helper before configuring control.'); return;
   }
-  // Only the panel must stay off the canvas. The utilities float over it as in Figma; the
-  // helper still treats them as excluded, so a stroke that reaches one lifts the pen.
+  // The helper rejects a canvas that intersects any excluded rect ('canvas-bounds'). The Camera Preview
+  // defaults to a spot over Krita's drawing area, so move it to the nearest clear spot rather than fail.
   const bounds = panel?.getBounds();
+  const preview = utilities.preview && !utilities.preview.isDestroyed() ? utilities.preview : null;
+  if (canvas && preview && intersects(canvas, preview.getBounds())) {
+    const workArea = status.displays.find(item => item.id === status.selectedDisplayId)?.workArea;
+    const spot = workArea ? previewClearOf(preview.getBounds(), canvas, workArea, bounds ? [bounds] : []) : null;
+    if (spot) {
+      movingPanelProgrammatically = true;
+      try { knownPreviewOrigin = spot; preview.setPosition(spot.x, spot.y, false); knownPreviewOrigin = preview.getBounds(); }
+      finally { movingPanelProgrammatically = false; }
+    }
+    if (intersects(canvas, preview.getBounds())) {
+      invalidateCanvas('Camera Preview overlaps the canvas. Move it off the drawing area, then select or detect the canvas again.');
+      status.fault = canvasSetup.state.message;
+    }
+  }
   if (canvas && bounds && intersects(canvas, bounds)) {
     invalidateCanvas('Panel overlaps the canvas. Move the panel, then select or detect the canvas again.');
     status.fault = canvasSetup.state.message;
@@ -243,7 +258,11 @@ async function confirmCanvas(value: unknown): Promise<void> {
     status.canvasConfirmed = true; status.fault = null;
     trackingEvidence('canvas-confirmed', { canvas, source: 'manual', realInput }); publish();
     void showCanvasOutline();
-  } catch (error) { invalidateCanvas('Canvas confirmation failed. Select with mouse again.'); await pause(canvasSetup.state.message); throw error; }
+  } catch (error) {
+    // Keep the reason visible; a generic message hid the helper's canvas-bounds rejection.
+    const reason = error instanceof Error ? explainRejection(error.message, status.native) : String(error);
+    invalidateCanvas(`Canvas confirmation failed: ${reason.replace(/\.$/, '')}. Select with mouse again.`); await pause(canvasSetup.state.message); throw error;
+  }
 }
 async function showCanvasOutline(): Promise<void> {
   if (!canvas || selectionOverlay) return;
@@ -501,7 +520,7 @@ function updateDisplays(displays:DisplayInfo[],forcePosition=false):void {
   if(selected&&!keepSelectionPosition&&(forcePosition||changed)){
     const position=panelPosition(selected);movingPanelProgrammatically=true;
     try{knownPanelOrigin=position;panel?.setPosition(position.x,position.y,false);if(panel)knownPanelOrigin=panel.getBounds();
-      const at=utilityPosition('preview',selected.workArea);utilities.preview?.setPosition(at.x,at.y,false);}
+      const at=utilityPosition('preview',selected.workArea);knownPreviewOrigin=at;utilities.preview?.setPosition(at.x,at.y,false);if(utilities.preview)knownPreviewOrigin=utilities.preview.getBounds();}
     finally{movingPanelProgrammatically=false;}
   }
   publish();
@@ -846,9 +865,10 @@ async function main(): Promise<void> {
     // Utilities live as long as the app; the panel's close button quits.
     win.on('close',event=>{if(!quitting)event.preventDefault();});
     win.on('closed',()=>{if(utilities[view]===win)utilities[view]=null;});
-    let known=win.getBounds();
+    knownPreviewOrigin=win.getBounds();
     win.on('move',()=>{
-      const bounds=win.getBounds(), unchanged=known.x===bounds.x&&known.y===bounds.y; known=bounds;
+      // Programmatic moves record their target first, so a late 'move' event does not pause input again.
+      const bounds=win.getBounds(), unchanged=knownPreviewOrigin?.x===bounds.x&&knownPreviewOrigin?.y===bounds.y; knownPreviewOrigin=bounds;
       if(!movingPanelProgrammatically&&!unchanged)surfaceMoved('Camera preview');
     });
     utilities[view]=win; return win;

@@ -12,6 +12,7 @@ export function explainRejection(code: string, native: NativeState | null): stri
     case 'prerequisites': return 'Resume needs the camera on, a set canvas and half a second of steady tracking';
     case 'not-hover-or-canvas': case 'not-hover-or-panel': return 'Resume tracking and point inside the canvas first';
     case 'display-reconfiguration-pending': return 'The display changed: set the canvas again';
+    case 'canvas-bounds': return 'The canvas must be at least 100 × 100 points, on one display, and clear of the Statheros panel and Camera Preview';
     default: return code;
   }
 }

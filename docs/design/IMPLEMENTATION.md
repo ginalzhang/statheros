@@ -12,7 +12,7 @@ The current source of truth is the **Statheros 2** design: the 35 frames and com
 | Notifications | A click-through window in the upper left. It **replaces the floating toolbar**. |
 | Advanced settings | The former settings page, opened from "Advanced settings…" in the modal footer. See the conflicts below. |
 
-The native helper excludes the panel and the Camera Preview (`excludedRects` accepts up to 64), so a stroke that reaches either one lifts the pen. Moving either one pauses input and reconfigures the helper. The notification window is click-through and not excluded, so a toast never changes input geometry.
+The native helper excludes the panel and the Camera Preview (`excludedRects` accepts up to 64), so a stroke that reaches either one lifts the pen. Moving either one pauses input and reconfigures the helper. The helper also **rejects a canvas that intersects any excluded rect** (`canvas-bounds`, `Engine.swift` configure). The Figma spot for the Camera Preview is over Krita's drawing area, so when a canvas is set the app moves the preview to the nearest clear spot (`previewClearOf`). If nothing fits, it asks you to move the preview off the drawing area. The notification window is click-through and not excluded, so a toast never changes input geometry.
 
 ## State language
 
