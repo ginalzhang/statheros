@@ -23,6 +23,7 @@ import { defaultSettings, withCalibration } from '../shared/settings';
 import { isCalibrationV1 } from '../renderer/engine';
 import { ElectronVoice } from './voice/electron-voice';
 import { findSteadyCommands, VOICE_LABELS } from './voice/steady-commands';
+import { anthropicKey, createIntentClient, interpretIntent, type IntentClient } from './voice/intent';
 import { explainRejection } from './rejections';
 import type { CommandEvent } from './voice/types';
 import type { VoiceCaptureReport } from '../shared/voice';
@@ -205,10 +206,22 @@ async function microphone(enabled: boolean): Promise<void> {
   if (!voice) throw new Error('Voice input is unavailable.');
   voice.setMicrophone(enabled);
 }
+let intentClient: IntentClient | null | undefined;
+async function interpretWithClaude(text: string): Promise<ActionID | null> {
+  if (intentClient === undefined) { const key = anthropicKey(); intentClient = key ? createIntentClient(key) : null; }
+  if (!intentClient) return null;
+  try { return await interpretIntent(intentClient, text); }
+  catch (error) { console.warn('Claude intent failed:', error instanceof Error ? error.message : error); return null; }
+}
 /** <<COMMAND_ENTRYPOINT>> for voice: the shared dispatcher, resolving after the native ack. */
 async function executeVoiceCommand(command: CommandEvent): Promise<string | null> {
   if (command.kind === 'dictation') throw new Error("Dictation isn't available in Steady");
-  const actions = findSteadyCommands(command.text);
+  let actions = findSteadyCommands(command.text);
+  if (actions.length === 0 && command.source !== 'local') {
+    // No command word: let Claude map what was meant ("get rid of that line") onto the same fixed actions.
+    const meant = await interpretWithClaude(command.text);
+    if (meant) actions = [meant];
+  }
   if (actions.length === 0) throw new Error(`No command heard in “${command.text.slice(0, 40)}”`);
   if (actions.length > 1) throw new Error(`Heard more than one command (${actions.map(id => VOICE_LABELS[id].toLowerCase()).join(', ')}): say one at a time`);
   const action = actions[0]!;
