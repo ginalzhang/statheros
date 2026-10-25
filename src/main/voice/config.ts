@@ -39,7 +39,9 @@ export const defaultVoiceConfig = (): VoiceConfig => ({
     // Keyword spotting fires up to ~1 s after the phrase ends; in one breath the command is already spoken by then.
     prerollMs: 1500, playbackGateTailMs: 200,
     gateCapS: { earcon: 1, tts: 30 }, skipAfterDeviceSwapMs: 500, localStopKeyword: true, remnantAliases: [],
-    requireAttention: false, attentionWindowMs: 1500, localFollowUp: true,
+    requireAttention: false, attentionWindowMs: 1500,
+    // Off: command words stay on-device and instant. Counts ("undo three times") work after the wake phrase or push-to-talk.
+    localFollowUp: false,
   },
   vad: { threshold: 0.5, hangoverMs: 600 },
   stt: {

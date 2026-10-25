@@ -710,7 +710,7 @@ describe('follow-up after a local keyword ("undo … three times")', () => {
     h.send({ type: 'LocalCommand', text, ts });
   }
   it('runs the keyword at once, then silently transcribes the utterance from the pre-roll', () => {
-    const h = new Harness();
+    const h = new Harness({ config: c => { c.wake.localFollowUp = true; } });
     keyword(h);
     expect(h.dispatched()).toEqual(['undo']);
     expect(h.state).toBe('WAKING');
@@ -725,7 +725,7 @@ describe('follow-up after a local keyword ("undo … three times")', () => {
     expect(h.gate()).toBe(false);
   });
   it('queues behind the keyword command instead of aborting it', () => {
-    const h = new Harness({ abortSupported: true });
+    const h = new Harness({ abortSupported: true, config: c => { c.wake.localFollowUp = true; } });
     keyword(h);
     h.advance(1.2); h.stt({ type: 'SttConnected' }); h.vad(false);
     h.stt({ type: 'SttFinal', text: 'undo twice' });
@@ -733,7 +733,7 @@ describe('follow-up after a local keyword ("undo … three times")', () => {
     expect(h.toasts()).not.toContain('Will run after the current command');
   });
   it('shows the keyword result while still listening', () => {
-    const h = new Harness();
+    const h = new Harness({ config: c => { c.wake.localFollowUp = true; } });
     keyword(h);
     const cmdId = h.find('Dispatch')[0]!.command.cmdId;
     h.send({ type: 'CommandDone', cmdId, resultText: 'Undone' });
@@ -741,7 +741,7 @@ describe('follow-up after a local keyword ("undo … three times")', () => {
     expect(h.state).toBe('WAKING');
   });
   it('drops a failed follow-up quietly: the keyword already ran', () => {
-    const h = new Harness();
+    const h = new Harness({ config: c => { c.wake.localFollowUp = true; } });
     keyword(h);
     h.advance(10);
     expect(h.state).toBe('PASSIVE');
@@ -749,7 +749,7 @@ describe('follow-up after a local keyword ("undo … three times")', () => {
     expect(h.ctx.followUp).toBeNull();
   });
   it('a keyword spotted in audio the cloud already heard is not run twice', () => {
-    const h = new Harness();
+    const h = new Harness({ config: c => { c.wake.localFollowUp = true; } });
     keyword(h, 'undo', 1);
     h.advance(1.2); h.stt({ type: 'SttConnected' });
     h.now = 2.5; h.vad(false); h.stt({ type: 'SttFinal', text: 'undo undo' });
@@ -764,5 +764,12 @@ describe('follow-up after a local keyword ("undo … three times")', () => {
     // Its pre-roll starts where the last transcript's audio ended, not 1.5 s back.
     h.advance(4.2); h.stt({ type: 'SttConnected' });
     expect(h.find('StartForwarding').at(-1)?.fromTs).toBe(2.5);
+  });
+  it('is off by default: the keyword runs and nothing opens a cloud session', () => {
+    const h = new Harness();
+    keyword(h);
+    expect(h.dispatched()).toEqual(['undo']);
+    expect(h.find('OpenStt')).toEqual([]);
+    expect(h.state).toBe('EXECUTING');
   });
 });
