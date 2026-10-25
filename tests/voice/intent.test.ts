@@ -18,3 +18,16 @@ it('maps the constrained answer to a clamped plan and everything else to no step
 it('prefers ANTHROPIC_API_KEY', () => {
   expect(anthropicKey({ ANTHROPIC_API_KEY: ' sk-test ' })).toBe('sk-test');
 });
+
+// Regression: "hey cartesia get rid of the last few lines and change brush" was dropped as a guess or half-run.
+// Against claude-haiku-5-5 (3 runs × 12 phrases) the old prompt scored 31/36; this one 36/36.
+it('tells Claude the wake phrase addresses Steady, how vague counts map, and to keep the parts it understands', async () => {
+  const seen: { system?: string }[] = [];
+  await interpretPlan(fake({ text: '{"steps":[]}' }, seen), 'hey cartesia get rid of the last few lines and change brush');
+  const system = seen[0]!.system ?? '';
+  expect(system).toContain('"hey cartesia"');
+  expect(system).toContain('"the last few" → 3');
+  expect(system).toContain('"Change brush"');
+  expect(system).toContain('Act on every part of the request you can map');
+  expect(system).not.toContain('you would have to guess');
+});

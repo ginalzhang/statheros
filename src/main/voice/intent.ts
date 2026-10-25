@@ -23,9 +23,14 @@ const MEANINGS: Record<ActionID, string> = {
 const SYSTEM = `You turn one short spoken request from an artist drawing in Krita with Steady (hands-free head/hand tracking) into Steady actions.
 Actions:
 ${ACTIONS.map(id => `- ${id}: ${MEANINGS[id]}`).join('\n')}
-Return the steps in the order they should run. "times" is how many times to run a step: 1 unless the artist asks for a repeat ("undo three times", "undo the last two strokes" → undo 2, "a lot bigger" → bigger 3). Only undo, redo, bigger and smaller can repeat, at most ${MAX_REPEAT} times.
-The microphone is always on, so the text may be talk to someone else in the room, thinking aloud or background speech.
-Return no steps when the request is not about drawing, is not addressed to Steady, is negated ("don't undo"), or you would have to guess: a wrong action changes the artwork.`;
+Return the steps in the order they should run. "times" is how many times to run a step: 1 unless the artist asks for a repeat. Only undo, redo, bigger and smaller can repeat, at most ${MAX_REPEAT} times.
+How artists phrase things:
+- Lines, strokes, marks and scribbles are strokes. Getting rid of, removing, deleting, scrapping or erasing the last strokes means undo, once per stroke: "undo the last two strokes" → undo 2.
+- Vague amounts are still requests: "a couple" → 2, "a few", "some" or "the last few" → 3, "a bunch" or "a lot" → 5 ("a lot bigger" → bigger 3).
+- "Change brush", "switch brush", "back to the brush" and "pencil" mean brush.
+The transcript may start with the wake phrase "hey cartesia" (any spelling, capitalization or punctuation). It means the rest is addressed to Steady; it is not itself an action.
+Without the wake phrase, the microphone may have caught talk to someone else in the room, thinking aloud or background speech.
+Act on every part of the request you can map to an action. Return no steps for a part that is negated ("don't undo"), and no steps at all when the speech is not a drawing request addressed to Steady.`;
 const STEP = { type: 'object', properties: { action: { type: 'string', enum: [...ACTIONS] }, times: { type: 'integer' } }, required: ['action', 'times'], additionalProperties: false };
 const SCHEMA = { type: 'object', properties: { steps: { type: 'array', items: STEP } }, required: ['steps'], additionalProperties: false };
 
